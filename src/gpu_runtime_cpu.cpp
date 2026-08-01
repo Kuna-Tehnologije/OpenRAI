@@ -17,18 +17,33 @@
 
 namespace openrai {
 
-static constexpr int L0_IN  = 32,  L0_OUT = 256;
-static constexpr int L1_IN  = 256, L1_OUT = 512;
-static constexpr int L2_IN  = 512, L2_OUT = 256;
-static constexpr int L3_IN  = 256, L3_OUT = 128;
-static constexpr int L4_IN  = 128, L4_OUT = 4;
+// 12-layer architecture for ~4B parameters
+static constexpr int L0_IN  = 32,    L0_OUT = 16384;
+static constexpr int L1_IN  = 16384, L1_OUT = 24576;
+static constexpr int L2_IN  = 24576, L2_OUT = 24576;
+static constexpr int L3_IN  = 24576, L3_OUT = 24576;
+static constexpr int L4_IN  = 24576, L4_OUT = 24576;
+static constexpr int L5_IN  = 24576, L5_OUT = 16384;
+static constexpr int L6_IN  = 16384, L6_OUT = 16384;
+static constexpr int L7_IN  = 16384, L7_OUT = 8192;
+static constexpr int L8_IN  = 8192,  L8_OUT = 4096;
+static constexpr int L9_IN  = 4096,  L9_OUT = 2048;
+static constexpr int L10_IN = 2048,  L10_OUT = 1024;
+static constexpr int L11_IN = 1024,  L11_OUT = 4;
 
-static constexpr int TOTAL_PARAMS =
-    L0_IN*L0_OUT + L0_OUT +
-    L1_IN*L1_OUT + L1_OUT +
-    L2_IN*L2_OUT + L2_OUT +
-    L3_IN*L3_OUT + L3_OUT +
-    L4_IN*L4_OUT + L4_OUT;
+static constexpr size_t TOTAL_PARAMS =
+    static_cast<size_t>(L0_IN)*L0_OUT + L0_OUT +
+    static_cast<size_t>(L1_IN)*L1_OUT + L1_OUT +
+    static_cast<size_t>(L2_IN)*L2_OUT + L2_OUT +
+    static_cast<size_t>(L3_IN)*L3_OUT + L3_OUT +
+    static_cast<size_t>(L4_IN)*L4_OUT + L4_OUT +
+    static_cast<size_t>(L5_IN)*L5_OUT + L5_OUT +
+    static_cast<size_t>(L6_IN)*L6_OUT + L6_OUT +
+    static_cast<size_t>(L7_IN)*L7_OUT + L7_OUT +
+    static_cast<size_t>(L8_IN)*L8_OUT + L8_OUT +
+    static_cast<size_t>(L9_IN)*L9_OUT + L9_OUT +
+    static_cast<size_t>(L10_IN)*L10_OUT + L10_OUT +
+    static_cast<size_t>(L11_IN)*L11_OUT + L11_OUT;
 
 // ---- Xavier init -------------------------------------------------------
 static void xavier_init(std::vector<float>& w,
@@ -82,6 +97,13 @@ void GPUNeuralNet::init_weights(unsigned seed) {
     alloc(h_w2_, h_b2_, L2_IN,  L2_OUT);
     alloc(h_w3_, h_b3_, L3_IN,  L3_OUT);
     alloc(h_w4_, h_b4_, L4_IN,  L4_OUT);
+    alloc(h_w5_, h_b5_, L5_IN,  L5_OUT);
+    alloc(h_w6_, h_b6_, L6_IN,  L6_OUT);
+    alloc(h_w7_, h_b7_, L7_IN,  L7_OUT);
+    alloc(h_w8_, h_b8_, L8_IN,  L8_OUT);
+    alloc(h_w9_, h_b9_, L9_IN,  L9_OUT);
+    alloc(h_w10_, h_b10_, L10_IN, L10_OUT);
+    alloc(h_w11_, h_b11_, L11_IN, L11_OUT);
 }
 
 void GPUNeuralNet::upload_weights_to_device() {}   // no-op in CPU path
@@ -89,12 +111,22 @@ void GPUNeuralNet::upload_weights_to_device() {}   // no-op in CPU path
 GPUNeuralNet::~GPUNeuralNet() {}
 
 void GPUNeuralNet::cpu_forward(const float* input, float* output) const {
-    std::vector<float> a0(L0_OUT), a1(L1_OUT), a2(L2_OUT), a3(L3_OUT);
-    layer_cpu(input,    L0_IN,  h_w0_.data(), h_b0_.data(), a0.data(), L0_OUT, false);
-    layer_cpu(a0.data(),L1_IN,  h_w1_.data(), h_b1_.data(), a1.data(), L1_OUT, false);
-    layer_cpu(a1.data(),L2_IN,  h_w2_.data(), h_b2_.data(), a2.data(), L2_OUT, false);
-    layer_cpu(a2.data(),L3_IN,  h_w3_.data(), h_b3_.data(), a3.data(), L3_OUT, false);
-    layer_cpu(a3.data(),L4_IN,  h_w4_.data(), h_b4_.data(), output,    L4_OUT, true);
+    std::vector<float> a0(L0_OUT), a1(L1_OUT), a2(L2_OUT), a3(L3_OUT), 
+                       a4(L4_OUT), a5(L5_OUT), a6(L6_OUT), a7(L7_OUT),
+                       a8(L8_OUT), a9(L9_OUT), a10(L10_OUT);
+
+    layer_cpu(input,     L0_IN,  h_w0_.data(),  h_b0_.data(),  a0.data(),  L0_OUT,  false);
+    layer_cpu(a0.data(), L1_IN,  h_w1_.data(),  h_b1_.data(),  a1.data(),  L1_OUT,  false);
+    layer_cpu(a1.data(), L2_IN,  h_w2_.data(),  h_b2_.data(),  a2.data(),  L2_OUT,  false);
+    layer_cpu(a2.data(), L3_IN,  h_w3_.data(),  h_b3_.data(),  a3.data(),  L3_OUT,  false);
+    layer_cpu(a3.data(), L4_IN,  h_w4_.data(),  h_b4_.data(),  a4.data(),  L4_OUT,  false);
+    layer_cpu(a4.data(), L5_IN,  h_w5_.data(),  h_b5_.data(),  a5.data(),  L5_OUT,  false);
+    layer_cpu(a5.data(), L6_IN,  h_w6_.data(),  h_b6_.data(),  a6.data(),  L6_OUT,  false);
+    layer_cpu(a6.data(), L7_IN,  h_w7_.data(),  h_b7_.data(),  a7.data(),  L7_OUT,  false);
+    layer_cpu(a7.data(), L8_IN,  h_w8_.data(),  h_b8_.data(),  a8.data(),  L8_OUT,  false);
+    layer_cpu(a8.data(), L9_IN,  h_w9_.data(),  h_b9_.data(),  a9.data(),  L9_OUT,  false);
+    layer_cpu(a9.data(), L10_IN, h_w10_.data(), h_b10_.data(), a10.data(), L10_OUT, false);
+    layer_cpu(a10.data(),L11_IN, h_w11_.data(), h_b11_.data(), output,     L11_OUT, true);
 }
 
 void GPUNeuralNet::run_batch(const float*           inputs,
@@ -117,8 +149,8 @@ NNResult GPUNeuralNet::run_single(const float* input) const {
 
 void GPUNeuralNet::print_summary() const {
     LOG("[GPUNeuralNet] CPU fallback"
-        "  arch=32->256->512->256->128->4"
-        "  params=" << TOTAL_PARAMS);
+        "  arch=32->16384->24576->24576->24576->24576->16384->16384->8192->4096->2048->1024->4"
+        "  params=" << TOTAL_PARAMS << " (~" << (TOTAL_PARAMS / 1000000000.0) << "B)");
 }
 
 // -----------------------------------------------------------------------

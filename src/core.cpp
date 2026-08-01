@@ -18,10 +18,10 @@
 
 namespace openrai {
 
-static constexpr int NODE_COUNT = 100;
-static constexpr int TOP_K = 10;
-static constexpr int TOP_OUTPUT = 3;
-static constexpr int REASONING_NODE_COUNT = 10;
+static constexpr int NODE_COUNT = 20;
+static constexpr int TOP_K = 4;
+static constexpr int TOP_OUTPUT = 2;
+static constexpr int REASONING_NODE_COUNT = 5;
 static constexpr int LOOP_WAIT_MS = 50;
 static constexpr const char* VECTOR_MEMORY_PATH = "data/vector_memory.db";
 static constexpr const char* STEP_INPUT_POOL_PATH = "data/step_input_pool.csv";
@@ -212,7 +212,7 @@ void OpenRAI::inject_input(const std::string& input) {
 void OpenRAI::main_loop() {
     LOG("=== OPENRAI MAIN LOOP STARTED ==="
         << " nodes=" << NODE_COUNT
-        << " nn=32->256->512->256->128->4"
+        << " nn=32->16k->24k->24k->24k->24k->16k->16k->8k->4k->2k->1k->4 (12-layer, ~4B params)"
         << " cuda=" << (gpu_nn_->is_cuda_active() ? "ON" : "OFF")
         << " semantic=Tokenizer->Embedding->VectorMemory->Graph->Goals->Reflection"
         << " wait=" << LOOP_WAIT_MS << "ms");
