@@ -110,7 +110,8 @@ void SendChatMessage() {
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
     case WM_COMMAND:
-        if (LOWORD(wParam) == 1001) {  // Send button clicked
+        // Only handle button click (BN_CLICKED), not edit control notifications
+        if (LOWORD(wParam) == 1002 && HIWORD(wParam) == BN_CLICKED) {  // Send button clicked
             SendChatMessage();
         }
         break;
@@ -245,7 +246,7 @@ bool ChatGUI::initialize(int width, int height) {
         "Send",
         WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
         width - 120, height * 3 / 4 - 60, 100, 30,
-        g_hWnd, (HMENU)1001, GetModuleHandle(nullptr), nullptr
+        g_hWnd, (HMENU)1002, GetModuleHandle(nullptr), nullptr
     );
     SendMessage(g_hSendButton, WM_SETFONT, (WPARAM)hFont, TRUE);
 
@@ -255,7 +256,7 @@ bool ChatGUI::initialize(int width, int height) {
         "Messages: 0",
         WS_CHILD | WS_VISIBLE | SS_LEFT,
         10, height - 40, width - 40, 20,
-        g_hWnd, (HMENU)1002, GetModuleHandle(nullptr), nullptr
+        g_hWnd, (HMENU)1003, GetModuleHandle(nullptr), nullptr
     );
 
     // Add welcome message
@@ -277,6 +278,13 @@ bool ChatGUI::render_frame() {
             g_bRunning = false;
             return false;
         }
+
+        // Handle Enter key in input box
+        if (msg.message == WM_KEYDOWN && msg.wParam == VK_RETURN && msg.hwnd == g_hInputBox) {
+            SendChatMessage();
+            continue; // Skip default processing
+        }
+
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }

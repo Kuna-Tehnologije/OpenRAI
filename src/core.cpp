@@ -173,7 +173,9 @@ OpenRAI::OpenRAI()
 
     // Initialize LM Adapter (Cognition + Language Layer)
     LMConfig lm_config;
-    lm_config.model_type = "mock";  // Change to "llama" or "qwen" when integrated
+    lm_config.model_type = "mock";  // TEMPORARY: Docker Model Runner has Unicode path bug
+    // lm_config.model_type = "docker";  // Uncomment after installing Ollama and changing port to 11434
+    // lm_config.model_path = "http://localhost:11434";  // Ollama port (recommended)
     lm_config.context_length = 4096;
     lm_config.max_tokens = 512;
     lm_config.temperature = 0.7f;

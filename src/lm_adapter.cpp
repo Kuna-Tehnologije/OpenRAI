@@ -1,6 +1,7 @@
 #include "openrai/lm_adapter.h"
 #include <sstream>
 #include <iostream>
+#include <fstream>
 
 namespace openrai {
 
@@ -132,7 +133,7 @@ public:
         loaded_ = true; // Assume it works, will fail on first generate if not
 
         std::cout << "[SimpleHTTPBackend] Ready to connect!\n";
-        std::cout << "[SimpleHTTPBackend] API: " << api_url_ << "/v1/completions\n";
+        std::cout << "[SimpleHTTPBackend] API: " << api_url_ << "/api/generate\n";
 
         return loaded_;
     }
@@ -145,23 +146,50 @@ public:
             return response;
         }
 
-        // Escape quotes in prompt for shell
+        // Escape quotes in prompt for JSON
         std::string escaped_prompt = prompt;
         for (size_t pos = 0; (pos = escaped_prompt.find("\"", pos)) != std::string::npos; pos += 2) {
             escaped_prompt.replace(pos, 1, "\\\"");
         }
-        // Limit prompt length for shell safety
-        if (escaped_prompt.size() > 200) {
-            escaped_prompt = escaped_prompt.substr(0, 200) + "...";
+        // Also escape newlines
+        for (size_t pos = 0; (pos = escaped_prompt.find("\n", pos)) != std::string::npos; pos += 2) {
+            escaped_prompt.replace(pos, 1, "\\n");
+        }
+        // Also escape backslashes
+        for (size_t pos = 0; (pos = escaped_prompt.find("\\", pos)) != std::string::npos; pos += 2) {
+            if (pos + 1 < escaped_prompt.size() && 
+                (escaped_prompt[pos + 1] == '\"' || escaped_prompt[pos + 1] == 'n')) {
+                pos++; // Skip already escaped
+                continue;
+            }
+            escaped_prompt.replace(pos, 1, "\\\\");
         }
 
-        // Build curl command for vLLM/OpenAI-compatible API
+        // Limit prompt length
+        if (escaped_prompt.size() > 400) {
+            escaped_prompt = escaped_prompt.substr(0, 400) + "...";
+        }
+
+        // Write request to temporary file (more reliable than shell escaping)
+        std::string temp_file = "openrai_request.json";
+        {
+            std::ofstream file(temp_file);
+            if (!file) {
+                response.text = "[Error] Failed to create temp request file";
+                return response;
+            }
+            file << "{"
+                 << "\"model\":\"docker.io/ai/smollm2:latest\","
+                 << "\"prompt\":\"" << escaped_prompt << "\","
+                 << "\"stream\":false"
+                 << "}";
+        }
+
+        // Build curl command using temp file
         std::ostringstream cmd;
-        cmd << "curl -s -X POST " << api_url_ << "/v1/completions "
+        cmd << "curl.exe -s -X POST " << api_url_ << "/api/generate "
             << "-H \"Content-Type: application/json\" "
-            << "-d \"{\\\"prompt\\\":\\\"" << escaped_prompt << "\\\","
-            << "\\\"max_tokens\\\":512,"
-            << "\\\"temperature\\\":0.7}\" 2>&1";
+            << "--data-binary \"@" << temp_file << "\" 2>&1";
 
         std::cout << "[SimpleHTTPBackend] Calling API...\n";
 
@@ -185,10 +213,10 @@ public:
             return response;
         }
 
-        // Simple JSON parsing - extract "text" field
-        size_t text_start = result.find("\"text\":\"");
+        // Simple JSON parsing - extract "response" field (Docker Model Runner / Ollama format)
+        size_t text_start = result.find("\"response\":\"");
         if (text_start != std::string::npos) {
-            text_start += 8; // Skip "text":"
+            text_start += 12; // Skip "response":"
             size_t text_end = result.find("\"", text_start);
             if (text_end != std::string::npos) {
                 response.text = result.substr(text_start, text_end - text_start);
