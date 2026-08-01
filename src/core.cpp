@@ -234,17 +234,18 @@ std::string OpenRAI::generate_response(const std::string& prompt) {
     // Gather cognitive context from OpenRAI memory
     std::vector<std::string> memory_context;
     auto short_term = memory_system_->get_short_term_memory();
-    for (const auto& mem : short_term) {
+    for (const auto& output : short_term) {
         if (memory_context.size() >= 5) break;
-        memory_context.push_back(mem.content);
+        memory_context.push_back(output.data);
     }
 
-    // Gather knowledge graph entities
+    // Gather knowledge graph entities (using neighbors to get entities)
     std::vector<std::string> graph_entities;
-    auto entities = knowledge_graph_->get_all_entities();
-    for (const auto& entity : entities) {
-        if (graph_entities.size() >= 10) break;
-        graph_entities.push_back(entity);
+    if (!prompt.empty()) {
+        auto neighbors = knowledge_graph_->neighbors(prompt.substr(0, 20), 10);
+        for (const auto& neighbor : neighbors) {
+            graph_entities.push_back(neighbor);
+        }
     }
 
     // Generate with cognitive context
@@ -253,18 +254,13 @@ std::string OpenRAI::generate_response(const std::string& prompt) {
     );
 
     // Store response in memory for future context
-    std::vector<int> tokens = tokenizer_->tokenize(response.text);
-    std::vector<float> embedding = embedding_layer_->embed(tokens);
-    vector_memory_->store(response.text, embedding, 0.8f);
+    std::vector<std::string> response_tokens = tokenizer_->tokenize(response.text);
+    std::vector<float> embedding = embedding_layer_->embed(response_tokens);
+    vector_memory_->store(response.text, embedding, "lm_response");
 
-    // Update knowledge graph
-    knowledge_graph_->add_entity(prompt.substr(0, 50));
-    knowledge_graph_->add_entity(response.text.substr(0, 50));
-    knowledge_graph_->add_relation(
-        prompt.substr(0, 50), 
-        "generated", 
-        response.text.substr(0, 50)
-    );
+    // Update knowledge graph by ingesting both prompt and response
+    knowledge_graph_->ingest(prompt, *tokenizer_);
+    knowledge_graph_->ingest(response.text, *tokenizer_);
 
     LOG("[LM_RESPONSE] prompt=" << prompt.size() << " chars, "
         << "response=" << response.text.size() << " chars, "
