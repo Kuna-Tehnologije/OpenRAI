@@ -22,6 +22,7 @@ class VectorMemory;
 class KnowledgeGraph;
 class GoalSystem;
 class SelfReflection;
+class LMAdapter;
 
 // Core output structure
 struct Output {
@@ -54,6 +55,9 @@ public:
     // by the engine before the next loop iteration.
     void inject_input(const std::string& input);
 
+    // Generate language response with cognitive context
+    std::string generate_response(const std::string& prompt);
+
 private:
     std::unique_ptr<ThreadPool>      thread_pool_;
     std::unique_ptr<MemorySystem>    memory_system_;
@@ -68,6 +72,9 @@ private:
     std::unique_ptr<KnowledgeGraph>  knowledge_graph_;
     std::unique_ptr<GoalSystem>      goal_system_;
     std::unique_ptr<SelfReflection>  self_reflection_;
+
+    // Language model adapter (Cognition + Language hybrid)
+    std::unique_ptr<LMAdapter>       lm_adapter_;
 
     std::atomic<bool>        is_running_{false};
 

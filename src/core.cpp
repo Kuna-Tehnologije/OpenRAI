@@ -5,6 +5,7 @@
 #include <openrai/reasoning.h>
 #include <openrai/gpu_runtime.h>
 #include <openrai/semantic.h>
+#include <openrai/lm_adapter.h>
 #include <openrai/log.h>
 
 #include <algorithm>
@@ -170,11 +171,27 @@ OpenRAI::OpenRAI()
 
     LOG("[InputPool] CSV=" << STEP_INPUT_POOL_PATH << " count=" << STEP_INPUT_POOL.size());
 
+    // Initialize LM Adapter (Cognition + Language Layer)
+    LMConfig lm_config;
+    lm_config.model_type = "mock";  // Change to "llama" or "qwen" when integrated
+    lm_config.context_length = 4096;
+    lm_config.max_tokens = 512;
+    lm_config.temperature = 0.7f;
+    lm_config.use_gpu = true;
+
+    lm_adapter_ = std::make_unique<LMAdapter>(lm_config);
+    if (lm_adapter_->initialize()) {
+        LOG("[LMAdapter] Language layer initialized: " << lm_adapter_->get_model_info());
+    } else {
+        LOG("[LMAdapter] Warning: Language layer not available");
+    }
+
     LOG("[OpenRAI] Engine initialized"
         << " nodes=" << NODE_COUNT
         << " threads=" << NODE_COUNT
         << " gpu_slots=128"
-        << " semantic=on");
+        << " semantic=on"
+        << " language=" << (lm_adapter_->is_ready() ? "on" : "mock"));
     gpu_nn_->print_summary();
 }
 
@@ -207,6 +224,53 @@ void OpenRAI::inject_input(const std::string& input) {
         pending_inputs_.push(input);
     }
     LOG("[INJECT] \"" << input << "\"");
+}
+
+std::string OpenRAI::generate_response(const std::string& prompt) {
+    if (!lm_adapter_ || !lm_adapter_->is_ready()) {
+        return "[Error] Language model not available";
+    }
+
+    // Gather cognitive context from OpenRAI memory
+    std::vector<std::string> memory_context;
+    auto short_term = memory_system_->get_short_term_memory();
+    for (const auto& mem : short_term) {
+        if (memory_context.size() >= 5) break;
+        memory_context.push_back(mem.content);
+    }
+
+    // Gather knowledge graph entities
+    std::vector<std::string> graph_entities;
+    auto entities = knowledge_graph_->get_all_entities();
+    for (const auto& entity : entities) {
+        if (graph_entities.size() >= 10) break;
+        graph_entities.push_back(entity);
+    }
+
+    // Generate with cognitive context
+    auto response = lm_adapter_->generate_with_context(
+        prompt, memory_context, graph_entities
+    );
+
+    // Store response in memory for future context
+    std::vector<int> tokens = tokenizer_->tokenize(response.text);
+    std::vector<float> embedding = embedding_layer_->embed(tokens);
+    vector_memory_->store(response.text, embedding, 0.8f);
+
+    // Update knowledge graph
+    knowledge_graph_->add_entity(prompt.substr(0, 50));
+    knowledge_graph_->add_entity(response.text.substr(0, 50));
+    knowledge_graph_->add_relation(
+        prompt.substr(0, 50), 
+        "generated", 
+        response.text.substr(0, 50)
+    );
+
+    LOG("[LM_RESPONSE] prompt=" << prompt.size() << " chars, "
+        << "response=" << response.text.size() << " chars, "
+        << "confidence=" << response.confidence);
+
+    return response.text;
 }
 
 void OpenRAI::main_loop() {
