@@ -8,6 +8,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(Threads REQUIRED)
 find_package(imgui CONFIG REQUIRED)
 
+# Include SQLite3 (bundled amalgamation)
+include_directories(${PROJECT_SOURCE_DIR}/src/vendor/sqlite)
+
 # Include directories
 include_directories(${PROJECT_SOURCE_DIR}/include)
 
@@ -48,6 +51,10 @@ endif()
 # -----------------------------------------------------------------------
 # Sources
 # -----------------------------------------------------------------------
+# SQLite3 amalgamation (compile as C)
+set(SQLITE_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/vendor/sqlite/sqlite3.c")
+set_source_files_properties(${SQLITE_SOURCE} PROPERTIES LANGUAGE C)
+
 # Core sources (exclude main files and GUI variants)
 file(GLOB CPP_SOURCES "src/*.cpp")
 list(REMOVE_ITEM CPP_SOURCES 
@@ -62,7 +69,7 @@ if(CUDA_ENABLED)
     file(GLOB CUDA_SOURCES "src/cuda/*.cu")
 
     # Main executable (original OpenRAI)
-    add_executable(openrai src/main.cpp ${CPP_SOURCES} ${CUDA_SOURCES})
+    add_executable(openrai src/main.cpp ${CPP_SOURCES} ${CUDA_SOURCES} ${SQLITE_SOURCE})
     set_target_properties(openrai PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON
         CUDA_RESOLVE_DEVICE_SYMBOLS ON
@@ -73,7 +80,7 @@ if(CUDA_ENABLED)
     target_link_libraries(openrai PRIVATE Threads::Threads cudart cublas)
 
     # Chat executable - Console version
-    add_executable(openrai_chat src/main_chat.cpp src/chat_gui.cpp ${CPP_SOURCES} ${CUDA_SOURCES})
+    add_executable(openrai_chat src/main_chat.cpp src/chat_gui.cpp ${CPP_SOURCES} ${CUDA_SOURCES} ${SQLITE_SOURCE})
     set_target_properties(openrai_chat PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON
         CUDA_RESOLVE_DEVICE_SYMBOLS ON
@@ -84,7 +91,7 @@ if(CUDA_ENABLED)
     target_link_libraries(openrai_chat PRIVATE Threads::Threads cudart cublas)
 
     # Chat GUI executable - Windows native UI (NO DEPENDENCIES!)
-    add_executable(openrai_chat_gui WIN32 src/main_chat.cpp src/chat_gui_win32.cpp ${CPP_SOURCES} ${CUDA_SOURCES})
+    add_executable(openrai_chat_gui WIN32 src/main_chat.cpp src/chat_gui_win32.cpp ${CPP_SOURCES} ${CUDA_SOURCES} ${SQLITE_SOURCE})
     set_target_properties(openrai_chat_gui PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON
         CUDA_RESOLVE_DEVICE_SYMBOLS ON
@@ -96,15 +103,15 @@ if(CUDA_ENABLED)
     target_compile_definitions(openrai_chat_gui PRIVATE OPENRAI_WIN32_GUI)
 else()
     # Main executable (original OpenRAI)
-    add_executable(openrai src/main.cpp ${CPP_SOURCES})
+    add_executable(openrai src/main.cpp ${CPP_SOURCES} ${SQLITE_SOURCE})
     target_link_libraries(openrai PRIVATE Threads::Threads)
 
     # Chat executable - Console version
-    add_executable(openrai_chat src/main_chat.cpp src/chat_gui.cpp ${CPP_SOURCES})
+    add_executable(openrai_chat src/main_chat.cpp src/chat_gui.cpp ${CPP_SOURCES} ${SQLITE_SOURCE})
     target_link_libraries(openrai_chat PRIVATE Threads::Threads)
 
     # Chat GUI executable - Windows native UI (NO DEPENDENCIES!)
-    add_executable(openrai_chat_gui WIN32 src/main_chat.cpp src/chat_gui_win32.cpp ${CPP_SOURCES})
+    add_executable(openrai_chat_gui WIN32 src/main_chat.cpp src/chat_gui_win32.cpp ${CPP_SOURCES} ${SQLITE_SOURCE})
     target_link_libraries(openrai_chat_gui PRIVATE Threads::Threads comctl32)
     target_compile_definitions(openrai_chat_gui PRIVATE OPENRAI_WIN32_GUI)
 endif()

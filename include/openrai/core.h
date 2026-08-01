@@ -20,6 +20,7 @@ class GPUNeuralNet;
 class Tokenizer;
 class EmbeddingLayer;
 class VectorMemory;
+class VectorDatabase;
 class KnowledgeGraph;
 class GoalSystem;
 class SelfReflection;
@@ -79,6 +80,7 @@ private:
     std::unique_ptr<Tokenizer>       tokenizer_;
     std::unique_ptr<EmbeddingLayer>  embedding_layer_;
     std::unique_ptr<VectorMemory>    vector_memory_;
+    std::unique_ptr<VectorDatabase>  vector_db_;           // SQL-based vector ? text mapping
     std::unique_ptr<KnowledgeGraph>  knowledge_graph_;
     std::unique_ptr<GoalSystem>      goal_system_;
     std::unique_ptr<SelfReflection>  self_reflection_;

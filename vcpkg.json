@@ -1,0 +1,8 @@
+{
+  "name": "openrai",
+  "version": "0.1.0",
+  "dependencies": [
+    "imgui",
+    "sqlite3"
+  ]
+}

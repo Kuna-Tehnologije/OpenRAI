@@ -6,6 +6,7 @@
 #include <openrai/gpu_runtime.h>
 #include <openrai/semantic.h>
 #include <openrai/lm_adapter.h>
+#include <openrai/vector_db.h>
 #include <openrai/log.h>
 
 #include <algorithm>
@@ -25,6 +26,7 @@ static constexpr int TOP_OUTPUT = 4;
 static constexpr int REASONING_NODE_COUNT = 20;
 static constexpr int LOOP_WAIT_MS = 33;
 static constexpr const char* VECTOR_MEMORY_PATH = "data/vector_memory.db";
+static constexpr const char* VECTOR_DB_PATH = "data/vector_database.db";
 static constexpr const char* STEP_INPUT_POOL_PATH = "data/openrai_math_1M.csv";
 
 // Load step inputs from CSV file only (manual entry)
@@ -70,6 +72,7 @@ OpenRAI::OpenRAI()
       tokenizer_(std::make_unique<Tokenizer>()),
       embedding_layer_(std::make_unique<EmbeddingLayer>(32)),
       vector_memory_(std::make_unique<VectorMemory>(32, SIZE_MAX)),  // Infinite capacity
+      vector_db_(std::make_unique<VectorDatabase>()),                // SQL-based vector DB
       knowledge_graph_(std::make_unique<KnowledgeGraph>()),
       goal_system_(std::make_unique<GoalSystem>()),
       self_reflection_(std::make_unique<SelfReflection>())
@@ -80,6 +83,13 @@ OpenRAI::OpenRAI()
             << " size=" << vector_memory_->size());
     } else {
         LOG("[VectorMemory] No persistent memory found, starting fresh");
+    }
+
+    // Initialize Vector Database (SQL-based)
+    if (vector_db_->initialize(VECTOR_DB_PATH)) {
+        LOG("[VectorDB] Initialized: " << VECTOR_DB_PATH << " entries=" << vector_db_->count());
+    } else {
+        LOG("[VectorDB] Warning: Failed to initialize vector database");
     }
 
     LOG("[InputPool] CSV=" << STEP_INPUT_POOL_PATH << " count=" << STEP_INPUT_POOL.size());
@@ -216,6 +226,9 @@ void OpenRAI::main_loop() {
     std::vector<float> batch_inputs;
     std::vector<std::string> batch_labels;
 
+    std::string last_step_input_pool = "You are OpenRAI Engine Node";
+
+
     while (is_running_) {
         ++iteration;
         iteration_count_ = iteration;
@@ -227,6 +240,7 @@ void OpenRAI::main_loop() {
             const auto& next_input = STEP_INPUT_POOL[step_input_index % STEP_INPUT_POOL.size()];
             step_input_index++;
             inject_input(next_input);
+            last_step_input_pool = next_input;
         }
 
         std::vector<std::string> injected;
@@ -245,6 +259,12 @@ void OpenRAI::main_loop() {
         batch_labels.clear();
         std::vector<std::string> batch_original_texts;
 
+        // Èuvaj injected text za node-ove
+        std::string current_injected_text;
+        if (!injected.empty()) {
+            current_injected_text = injected.front();
+        }
+
         for (const auto& raw : injected) {
             batch_inputs.resize(batch_inputs.size() + input_dim, 0.f);
             encode_input_v2(raw,
@@ -262,7 +282,8 @@ void OpenRAI::main_loop() {
                             batch_inputs.data() + (batch_labels.size() * input_dim),
                             input_dim);
             batch_labels.push_back(name);
-            batch_original_texts.push_back(node_text);
+            // Store injected text instead of node last_step_input_pool
+            batch_original_texts.push_back(current_injected_text.empty() ? last_step_input_pool : current_injected_text);
         }
 
         const size_t total_samples = batch_labels.size();
@@ -308,6 +329,10 @@ void OpenRAI::main_loop() {
             auto tokens = tokenizer_->tokenize(original_text);
             auto embedding = embedding_layer_->embed(tokens);
             vector_memory_->store(original_text, embedding, is_injected ? "injected" : "node");
+
+            // Store in SQL vector database (text_value ? embedding mapping)
+            vector_db_->store(original_text, embedding, is_injected ? "injected" : "node");
+
             knowledge_graph_->ingest(original_text, *tokenizer_);
             goal_system_->update_from_text(original_text);
         }
