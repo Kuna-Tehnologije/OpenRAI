@@ -47,11 +47,19 @@ endif()
 # -----------------------------------------------------------------------
 # Sources
 # -----------------------------------------------------------------------
+# Core sources (exclude main files)
 file(GLOB CPP_SOURCES "src/*.cpp")
+list(REMOVE_ITEM CPP_SOURCES 
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/main_chat.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/chat_gui_imgui.cpp"  # ImGui version - not yet integrated
+)
 
 if(CUDA_ENABLED)
     file(GLOB CUDA_SOURCES "src/cuda/*.cu")
-    add_executable(openrai ${CPP_SOURCES} ${CUDA_SOURCES})
+
+    # Main executable (original OpenRAI)
+    add_executable(openrai src/main.cpp ${CPP_SOURCES} ${CUDA_SOURCES})
     set_target_properties(openrai PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON
         CUDA_RESOLVE_DEVICE_SYMBOLS ON
@@ -60,7 +68,23 @@ if(CUDA_ENABLED)
         ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}
     )
     target_link_libraries(openrai PRIVATE Threads::Threads cudart cublas)
+
+    # Chat executable (new GUI interface)
+    add_executable(openrai_chat src/main_chat.cpp ${CPP_SOURCES} ${CUDA_SOURCES})
+    set_target_properties(openrai_chat PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON
+        CUDA_RESOLVE_DEVICE_SYMBOLS ON
+    )
+    target_include_directories(openrai_chat PRIVATE
+        ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}
+    )
+    target_link_libraries(openrai_chat PRIVATE Threads::Threads cudart cublas)
 else()
-    add_executable(openrai ${CPP_SOURCES})
+    # Main executable (original OpenRAI)
+    add_executable(openrai src/main.cpp ${CPP_SOURCES})
     target_link_libraries(openrai PRIVATE Threads::Threads)
+
+    # Chat executable (new GUI interface)
+    add_executable(openrai_chat src/main_chat.cpp ${CPP_SOURCES})
+    target_link_libraries(openrai_chat PRIVATE Threads::Threads)
 endif()
