@@ -59,6 +59,14 @@ void MemorySystem::clear_current() {
     current_memory_.clear();
 }
 
+Output MemorySystem::get_last_short_term_output() const {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    if (short_term_memory_.empty()) {
+        return Output{};
+    }
+    return short_term_memory_.back();
+}
+
 size_t MemorySystem::long_term_size() const {
     std::shared_lock<std::shared_mutex> lock(mutex_);
     return long_term_memory_.size();

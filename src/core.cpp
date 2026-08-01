@@ -25,65 +25,15 @@ static constexpr int TOP_OUTPUT = 2;
 static constexpr int REASONING_NODE_COUNT = 5;
 static constexpr int LOOP_WAIT_MS = 200;
 static constexpr const char* VECTOR_MEMORY_PATH = "data/vector_memory.db";
-static constexpr const char* STEP_INPUT_POOL_PATH = "data/step_input_pool.csv";
-static constexpr size_t STEP_INPUT_POOL_SIZE = 100000;
+static constexpr const char* STEP_INPUT_POOL_PATH = "data/openrai_math_1M.csv";
 
-static std::string generate_step_input(size_t index) {
-    const int node = static_cast<int>(index % NODE_COUNT);
-    const int port = 9000 + static_cast<int>(index % 1000);
-    const int memory = 55 + static_cast<int>(index % 41);
-    const int latency = 10 + static_cast<int>(index % 120);
-    const int batch = 64 + static_cast<int>((index * 7) % 2048);
-    const float threshold = 0.30f + static_cast<float>(index % 60) / 100.0f;
-
-    std::ostringstream ss;
-    ss << std::fixed << std::setprecision(2);
-
-    switch (index % 12) {
-    case 0:
-        ss << "user: summarize current system state for window " << (index % 128);
-        break;
-    case 1:
-        ss << "sensor: temperature spike detected at node " << node << " value " << (65 + (index % 30)) << "C";
-        break;
-    case 2:
-        ss << "alert: memory usage exceeded " << memory << " percent on node " << node;
-        break;
-    case 3:
-        ss << "query: summarize last " << (5 + (index % 50)) << " reasoning outputs";
-        break;
-    case 4:
-        ss << "event: new data stream connected on port " << port;
-        break;
-    case 5:
-        ss << "command: increase thread priority on node " << node;
-        break;
-    case 6:
-        ss << "trigger: anomaly score above threshold " << threshold;
-        break;
-    case 7:
-        ss << "probe: latency measurement on gpu queue exceeded " << latency << "ms";
-        break;
-    case 8:
-        ss << "feed: new labelled sample batch received size " << batch;
-        break;
-    case 9:
-        ss << "goal: prioritize stability over throughput for cluster " << static_cast<char>('A' + (index % 6));
-        break;
-    case 10:
-        ss << "vector: similarity search over prior failures for node " << node;
-        break;
-    default:
-        ss << "reflect: compare current output with earlier memory segment " << (index % 256);
-        break;
-    }
-
-    return ss.str();
-}
-
+// Load step inputs from CSV file only (manual entry)
 static std::vector<std::string> load_step_input_pool_from_csv(const std::string& path) {
     std::ifstream file(path);
-    if (!file.is_open()) return {};
+    if (!file.is_open()) {
+        LOG("[InputPool] CSV file not found: " << path);
+        return {};
+    }
 
     std::vector<std::string> pool;
     std::string line;
@@ -105,48 +55,11 @@ static std::vector<std::string> load_step_input_pool_from_csv(const std::string&
             pool.push_back(line);
     }
 
+    LOG("[InputPool] Loaded " << pool.size() << " inputs from CSV");
     return pool;
 }
 
-static bool write_step_input_pool_csv(const std::string& path, size_t count) {
-    try {
-        std::filesystem::path csv_path(path);
-        if (csv_path.has_parent_path()) {
-            std::filesystem::create_directories(csv_path.parent_path());
-        }
-
-        std::ofstream file(path, std::ios::trunc);
-        if (!file.is_open()) return false;
-
-        file << "input\n";
-        for (size_t i = 0; i < count; ++i) {
-            file << std::quoted(generate_step_input(i)) << '\n';
-        }
-
-        return true;
-    } catch (...) {
-        return false;
-    }
-}
-
-static std::vector<std::string> load_or_create_step_input_pool() {
-    auto pool = load_step_input_pool_from_csv(STEP_INPUT_POOL_PATH);
-    if (pool.size() >= STEP_INPUT_POOL_SIZE) return pool;
-
-    if (write_step_input_pool_csv(STEP_INPUT_POOL_PATH, STEP_INPUT_POOL_SIZE)) {
-        pool = load_step_input_pool_from_csv(STEP_INPUT_POOL_PATH);
-        if (!pool.empty()) return pool;
-    }
-
-    pool.clear();
-    pool.reserve(256);
-    for (size_t i = 0; i < 256; ++i) {
-        pool.push_back(generate_step_input(i));
-    }
-    return pool;
-}
-
-static const std::vector<std::string> STEP_INPUT_POOL = load_or_create_step_input_pool();
+static const std::vector<std::string> STEP_INPUT_POOL = load_step_input_pool_from_csv(STEP_INPUT_POOL_PATH);
 
 OpenRAI::OpenRAI()
     : thread_pool_(std::make_unique<ThreadPool>(NODE_COUNT)),
@@ -282,6 +195,10 @@ void OpenRAI::main_loop() {
     int total_outputs = 0;
     int total_injected = 0;
     size_t step_input_index = 0;
+
+    // Rate limiting: 1 output svakih 5 sekundi
+    auto last_output_time = std::chrono::steady_clock::now();
+    const auto output_cooldown = std::chrono::seconds(5);
 
     const size_t input_dim = GPUNeuralNet::INPUT_DIM;
     std::vector<float> batch_inputs;
@@ -451,6 +368,24 @@ void OpenRAI::main_loop() {
 
                     LOG("[FINAL OUTPUT] " << final_text.str());
                     LOG("[VALUE] " << actual_value);
+
+                    // Rate limiting: 1 output svakih 5 sekundi
+                    auto now = std::chrono::steady_clock::now();
+                    auto time_since_last = std::chrono::duration_cast<std::chrono::seconds>(now - last_output_time).count();
+
+                    if (time_since_last >= 5) {
+                        // Pošalji vector memory value string u GUI chat ako je callback postavljen
+                        if (output_callback_ && !context.empty()) {
+                            // Koristi best match iz vector memory, ne node data
+                            std::string memory_value = context.front().text;
+                            output_callback_(memory_value);
+                            last_output_time = now;
+                            LOG("[GUI OUTPUT] Sent to chat: \"" << memory_value << "\"");
+                        }
+                    } else {
+                        LOG("[GUI OUTPUT] Skipped (cooldown: " << (5 - time_since_last) << "s remaining)");
+                    }
+
                     ++iter_outputs;
                 }
             }

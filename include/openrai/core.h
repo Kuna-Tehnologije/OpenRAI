@@ -7,6 +7,7 @@
 #include <chrono>
 #include <string>
 #include <mutex>
+#include <functional>
 
 namespace openrai {
 
@@ -58,6 +59,10 @@ public:
     // Generate language response with cognitive context
     std::string generate_response(const std::string& prompt);
 
+    // Set callback for sending outputs to GUI
+    using OutputCallback = std::function<void(const std::string&)>;
+    void set_output_callback(OutputCallback callback) { output_callback_ = callback; }
+
 private:
     std::unique_ptr<ThreadPool>      thread_pool_;
     std::unique_ptr<MemorySystem>    memory_system_;
@@ -81,6 +86,9 @@ private:
     // Thread-safe queue for external inputs
     std::queue<std::string>  pending_inputs_;
     std::mutex               pending_mutex_;
+
+    // Callback for sending outputs to GUI
+    OutputCallback           output_callback_;
 
     void main_loop();
 };

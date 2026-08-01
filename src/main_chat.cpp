@@ -28,6 +28,11 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // Postavi callback za slanje outputa iz core-a u GUI
+    rai.set_output_callback([&chat_gui](const std::string& output) {
+        chat_gui.add_message(output, false);
+    });
+
     // Main chat loop
     while (chat_gui.render_frame()) {
         // GUI rendering happens in render_frame()

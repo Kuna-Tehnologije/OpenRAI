@@ -21,6 +21,9 @@ public:
     std::vector<Output> get_short_term_memory();
     void filter_to_short_term();
 
+    // Dobavi zadnji output iz short-term memorije
+    Output get_last_short_term_output() const;
+
     // Dugotrajna memorija (vektorska baza) - sprema važne reasoning misli
     void add_to_long_term(const MemoryEntry& entry);
     std::vector<MemoryEntry> retrieve_from_long_term(const std::string& query, size_t top_k = 5);

@@ -1,4 +1,5 @@
 // Simple Windows GUI for OpenRAI Chat (no ImGui dependency)
+// Simple Windows GUI for OpenRAI Chat (no ImGui dependency)
 // Uses native Win32 API for text boxes and buttons
 
 #include "openrai/chat_gui.h"
@@ -7,6 +8,7 @@
 #include <commctrl.h>
 #include <string>
 #include <thread>
+#include <mutex>
 
 #pragma comment(lib, "comctl32.lib")
 
@@ -26,23 +28,30 @@ static HWND g_hStatsLabel = nullptr;
 
 static OpenRAI* g_pRAI = nullptr;
 static std::vector<ChatMessage> g_ChatHistory;
+static std::mutex g_ChatMutex;
 static bool g_bRunning = false;
+
+// Custom message for UI update from background thread
+#define WM_UPDATE_CHAT (WM_USER + 1)
 
 // Window procedure
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
 
-// Update chat display
+// Update chat display (must be called from UI thread)
 void UpdateChatDisplay() {
     if (!g_hChatHistory) return;
 
     std::string chatText;
-    for (const auto& msg : g_ChatHistory) {
-        if (msg.is_user) {
-            chatText += "[YOU]: ";
-        } else {
-            chatText += "[OpenRAI]: ";
+    {
+        std::lock_guard<std::mutex> lock(g_ChatMutex);
+        for (const auto& msg : g_ChatHistory) {
+            if (msg.is_user) {
+                chatText += "[YOU]: ";
+            } else {
+                chatText += "[OpenRAI]: ";
+            }
+            chatText += msg.text + "\r\n\r\n";
         }
-        chatText += msg.text + "\r\n\r\n";
     }
 
     SetWindowTextA(g_hChatHistory, chatText.c_str());
@@ -69,7 +78,10 @@ void SendChatMessage() {
     ChatMessage userMsg;
     userMsg.text = input;
     userMsg.is_user = true;
-    g_ChatHistory.push_back(userMsg);
+    {
+        std::lock_guard<std::mutex> lock(g_ChatMutex);
+        g_ChatHistory.push_back(userMsg);
+    }
     UpdateChatDisplay();
 
     // Update status
@@ -109,6 +121,11 @@ void SendChatMessage() {
 // Window procedure implementation
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
+    case WM_UPDATE_CHAT:
+        // Update display when background thread adds message
+        UpdateChatDisplay();
+        break;
+
     case WM_COMMAND:
         // Only handle button click (BN_CLICKED), not edit control notifications
         if (LOWORD(wParam) == 1002 && HIWORD(wParam) == BN_CLICKED) {  // Send button clicked
@@ -302,10 +319,16 @@ void ChatGUI::add_message(const std::string& text, bool is_user) {
     msg.timestamp = static_cast<float>(chat_history_.size());
 
     chat_history_.push_back(msg);
-    g_ChatHistory.push_back(msg);
+    {
+        std::lock_guard<std::mutex> glock(g_ChatMutex);
+        g_ChatHistory.push_back(msg);
+    }
     total_messages_++;
 
-    UpdateChatDisplay();
+    // Post message to UI thread to update display (thread-safe)
+    if (g_hWnd) {
+        PostMessage(g_hWnd, WM_UPDATE_CHAT, 0, 0);
+    }
 }
 
 void ChatGUI::shutdown() {
