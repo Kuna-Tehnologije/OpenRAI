@@ -69,7 +69,7 @@ OpenRAI::OpenRAI()
       gpu_nn_(std::make_unique<GPUNeuralNet>()),
       tokenizer_(std::make_unique<Tokenizer>()),
       embedding_layer_(std::make_unique<EmbeddingLayer>(32)),
-      vector_memory_(std::make_unique<VectorMemory>(32, 5000)),
+      vector_memory_(std::make_unique<VectorMemory>(32, SIZE_MAX)),  // Infinite capacity
       knowledge_graph_(std::make_unique<KnowledgeGraph>()),
       goal_system_(std::make_unique<GoalSystem>()),
       self_reflection_(std::make_unique<SelfReflection>())
@@ -130,6 +130,11 @@ void OpenRAI::start() {
 
 void OpenRAI::stop() {
     is_running_ = false;
+}
+
+std::string OpenRAI::get_latest_output() const {
+    std::lock_guard<std::mutex> lock(stats_mutex_);
+    return latest_output_;
 }
 
 void OpenRAI::inject_input(const std::string& input) {
@@ -213,6 +218,7 @@ void OpenRAI::main_loop() {
 
     while (is_running_) {
         ++iteration;
+        iteration_count_ = iteration;
         auto t0 = std::chrono::steady_clock::now();
         LOG("\n===== ITERATION " << iteration << " =====");
 
@@ -336,6 +342,8 @@ void OpenRAI::main_loop() {
             LOG("[PHASE 6/6] Challenge / reflection loop nodes=" << REASONING_NODE_COUNT
                 << " - judge if the conclusion should become final output");
             int iter_outputs = 0;
+            bool output_sent_this_iteration = false; // Flag da se šalje samo jedan output po iteraciji
+
             for (size_t k = 0; k < std::min<size_t>(TOP_OUTPUT, ranked.size()); ++k) {
                 const auto& candidate = ranked[k];
                 auto context = vector_memory_->retrieve_context(candidate.data, *tokenizer_, *embedding_layer_, 4);
@@ -376,8 +384,15 @@ void OpenRAI::main_loop() {
                     LOG("[FINAL OUTPUT] " << final_text.str());
                     LOG("[VALUE] " << actual_value);
 
-                    // Output samo ako je confidence >= 0.9
-                    if (reflection.confidence >= 0.9f) {
+                    // Ažuriraj stats za UI ako je confidence >= 0.65
+                    if (reflection.confidence >= 0.65f && !context.empty()) {
+                        std::lock_guard<std::mutex> lk(stats_mutex_);
+                        latest_output_ = context.front().text;
+                        latest_confidence_ = reflection.confidence;
+                    }
+
+                    // Output samo ako je confidence >= 0.75
+                    if (reflection.confidence >= 0.75f) {
                         auto now = std::chrono::steady_clock::now();
 
                         // Provjeri da li èekamo odgovor od korisnika
@@ -404,7 +419,7 @@ void OpenRAI::main_loop() {
                             // Rate limiting: 1 output svakih 5 sekundi
                             auto time_since_last = std::chrono::duration_cast<std::chrono::seconds>(now - last_output_time).count();
 
-                            if (time_since_last >= 5) {
+                            if (time_since_last >= 5 && !output_sent_this_iteration) {
                                 if (output_callback_ && !context.empty()) {
                                     // Koristi best match iz vector memory, ne node data
                                     std::string memory_value = context.front().text;
@@ -416,6 +431,7 @@ void OpenRAI::main_loop() {
                                     // Pošalji LLM response u GUI
                                     output_callback_(llm_response);
                                     last_output_time = now;
+                                    output_sent_this_iteration = true; // Oznaèimo da smo poslali output
 
                                     // Postavi waiting flag - èekamo odgovor korisnika
                                     {
@@ -428,7 +444,11 @@ void OpenRAI::main_loop() {
                                     LOG("[GUI OUTPUT] Waiting for user response (timeout: 30s)");
                                 }
                             } else {
-                                LOG("[GUI OUTPUT] Skipped (cooldown: " << (5 - time_since_last) << "s remaining)");
+                                if (output_sent_this_iteration) {
+                                    LOG("[GUI OUTPUT] Skipped (already sent one output this iteration)");
+                                } else {
+                                    LOG("[GUI OUTPUT] Skipped (cooldown: " << (5 - time_since_last) << "s remaining)");
+                                }
                             }
                         }
                     } else {

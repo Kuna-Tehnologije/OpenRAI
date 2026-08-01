@@ -104,7 +104,7 @@ std::vector<float> EmbeddingLayer::embed(const std::vector<std::string>& tokens)
 // 3) Vector memory -------------------------------------------------------
 VectorMemory::VectorMemory(size_t dim, size_t capacity)
     : dim_(dim == 0 ? 32 : dim),
-      capacity_(capacity == 0 ? 5000 : capacity),
+      capacity_(capacity == 0 ? SIZE_MAX : capacity),  // Infinite by default
       persistence_path_("data/vector_memory.db") {}
 
 void VectorMemory::store(const std::string& text,
@@ -115,9 +115,8 @@ void VectorMemory::store(const std::string& text,
         item.embedding.resize(dim_, 0.0f);
     }
 
-    if (items_.size() >= capacity_)
-        items_.erase(items_.begin());
-
+    // Infinite capacity - no limit, just add
+    // (capacity check removed for infinite storage)
     items_.push_back(std::move(item));
 }
 

@@ -40,7 +40,7 @@ private:
 
 class VectorMemory {
 public:
-    explicit VectorMemory(size_t dim = 32, size_t capacity = 5000);
+    explicit VectorMemory(size_t dim = 32, size_t capacity = SIZE_MAX);
 
     void store(const std::string& text,
                const std::vector<float>& embedding,

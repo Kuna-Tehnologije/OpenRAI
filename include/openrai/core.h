@@ -63,6 +63,11 @@ public:
     using OutputCallback = std::function<void(const std::string&)>;
     void set_output_callback(OutputCallback callback) { output_callback_ = callback; }
 
+    // Get stats for UI
+    int get_iteration_count() const { return iteration_count_.load(); }
+    std::string get_latest_output() const;
+    float get_latest_confidence() const { return latest_confidence_.load(); }
+
 private:
     std::unique_ptr<ThreadPool>      thread_pool_;
     std::unique_ptr<MemorySystem>    memory_system_;
@@ -94,6 +99,12 @@ private:
     std::atomic<bool>        waiting_for_user_response_{false};
     std::chrono::steady_clock::time_point last_question_time_;
     std::mutex               response_mutex_;
+
+    // Stats for UI
+    std::atomic<int>         iteration_count_{0};
+    std::string              latest_output_;
+    std::atomic<float>       latest_confidence_{0.0f};
+    mutable std::mutex       stats_mutex_;
 
     void main_loop();
 };

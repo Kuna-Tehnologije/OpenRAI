@@ -33,6 +33,7 @@ static bool g_bRunning = false;
 
 // Custom message for UI update from background thread
 #define WM_UPDATE_CHAT (WM_USER + 1)
+#define WM_UPDATE_STATS (WM_USER + 2)
 
 // Window procedure
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
@@ -61,6 +62,31 @@ void UpdateChatDisplay() {
     SendMessage(g_hChatHistory, EM_SCROLLCARET, 0, 0);
 }
 
+// Update stats label with OpenRAI statistics
+void UpdateStatsLabel() {
+    if (!g_hStatsLabel || !g_pRAI) return;
+
+    int iteration = g_pRAI->get_iteration_count();
+    std::string latest_output = g_pRAI->get_latest_output();
+    float confidence = g_pRAI->get_latest_confidence();
+
+    // Skrati output ako je predugaèak
+    if (latest_output.length() > 60) {
+        latest_output = latest_output.substr(0, 57) + "...";
+    }
+
+    char stats[512];
+    if (latest_output.empty()) {
+        sprintf_s(stats, "Iter: %d | Messages: %d | Latest: (none)", 
+                 iteration, (int)g_ChatHistory.size());
+    } else {
+        sprintf_s(stats, "Iter: %d | Messages: %d | Latest: %s (conf: %.2f)", 
+                 iteration, (int)g_ChatHistory.size(), latest_output.c_str(), confidence);
+    }
+
+    SetWindowTextA(g_hStatsLabel, stats);
+}
+
 // Send message handler
 void SendChatMessage() {
     if (!g_hInputBox || !g_pRAI) return;
@@ -87,33 +113,13 @@ void SendChatMessage() {
     // Update status
     SetWindowTextA(g_hStatsLabel, "OpenRAI is thinking...");
 
-    // Generate AI response (in background to not block UI)
+    // Inject input to OpenRAI (ne generišemo response ovde, OpenRAI æe automatski poslati kroz callback)
     std::thread([input]() {
         // Inject to OpenRAI
         g_pRAI->inject_input(input);
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
-
-        // Generate response
-        auto start = std::chrono::steady_clock::now();
-        std::string response = g_pRAI->generate_response(input);
-        auto end = std::chrono::steady_clock::now();
-        float responseTime = std::chrono::duration<float>(end - start).count();
-
-        // Add AI message
-        ChatMessage aiMsg;
-        aiMsg.text = response;
-        aiMsg.is_user = false;
-        g_ChatHistory.push_back(aiMsg);
-
-        // Update UI (must be on main thread in real app, but this works for simple case)
-        UpdateChatDisplay();
-
-        // Update stats
-        char stats[256];
-        sprintf_s(stats, "Messages: %d | Last response: %.3fs", 
-                 (int)g_ChatHistory.size(), responseTime);
-        SetWindowTextA(g_hStatsLabel, stats);
+        // OpenRAI æe automatski generisati i poslati response kroz callback kada je confidence >= 0.9
+        // Nema potrebe za dodatnim generate_response() pozivom ovde
 
     }).detach();
 }
@@ -124,6 +130,18 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
     case WM_UPDATE_CHAT:
         // Update display when background thread adds message
         UpdateChatDisplay();
+        break;
+
+    case WM_UPDATE_STATS:
+        // Update stats label
+        UpdateStatsLabel();
+        break;
+
+    case WM_TIMER:
+        // Periodic stats update (every 500ms)
+        if (wParam == 1) {
+            UpdateStatsLabel();
+        }
         break;
 
     case WM_COMMAND:
@@ -279,6 +297,9 @@ bool ChatGUI::initialize(int width, int height) {
     // Add welcome message
     add_message("Hello! I'm OpenRAI, a hybrid AI with memory, knowledge graph, and language capabilities. How can I help you today?", false);
 
+    // Set timer for periodic stats update (500ms)
+    SetTimer(g_hWnd, 1, 500, nullptr);
+
     // Show window
     ShowWindow(g_hWnd, SW_SHOW);
     UpdateWindow(g_hWnd);
@@ -334,6 +355,7 @@ void ChatGUI::add_message(const std::string& text, bool is_user) {
 void ChatGUI::shutdown() {
     g_bRunning = false;
     if (g_hWnd) {
+        KillTimer(g_hWnd, 1);
         DestroyWindow(g_hWnd);
         g_hWnd = nullptr;
     }
