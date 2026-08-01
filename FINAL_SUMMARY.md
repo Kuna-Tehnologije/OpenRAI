@@ -8,13 +8,13 @@
 
 ## ?? Statistika
 
-- **8 commits** dodano
-- **21 filea** kreirano/izmenjeno
-- **103,291 linija** dodano (+100k CSV input pool)
+- **11 commits** dodano
+- **24 filea** kreirano/izmenjeno
+- **104,000+ linija** dodano (+100k CSV input pool)
 - **3 nova executable targeta**:
   - `openrai.exe` - originalni engine
-  - `openrai_chat.exe` - chat interface ? **NOVO!**
-  - (build test targets)
+  - `openrai_chat.exe` - **chat interface ? RADI!**
+  - (+ ImGui version kada aktiviran)
 
 ---
 
@@ -38,11 +38,13 @@
 
 ### 3. Chat Interface ?
 **Interaktivni razgovor s AI-em!**
-- Console-based GUI (funkcionalna!)
+- **Console mode** - funkcionalna, radi odmah! ?
+- **ImGui template** - pripremljeno za visual UI ??
+- **Setup script** - automatska aktivacija ImGui-a
 - Multi-turn conversations
 - Commands: `/quit`, `/clear`, `/stats`, `/memory`
 - Real-time response timing
-- Template za ImGui visual interface
+- Scrollable history, color-coded messages (ImGui)
 
 ### 4. Cognitive Context ?
 - Prikuplja memory context (zadnjih 5 poruka)
@@ -51,13 +53,16 @@
 - Post-processing: sprema u memory + graph + reflection
 
 ### 5. Documentation ?
-**9 dokumentacijskih fajlova:**
+**12 dokumentacijskih fajlova:**
+- ?? `FINAL_SUMMARY.md` - **kompletni pregled** ?
+- ?? `CHAT_QUICK_START.md` - brzi start za chat ?
+- ?? `CHAT_OPTIONS.md` - usporedba Console/ImGui/API ?
+- ?? `CONNECT_TO_DOCKER.md` - 3-step Docker setup ?
+- ?? `IMGUI_ACTIVATION_GUIDE.md` - ImGui visual UI setup ?
 - ?? `HYBRID_ARCHITECTURE.md` - arhitektura
 - ?? `LM_INTEGRATION_GUIDE.md` - llama.cpp/ONNX guide
 - ?? `DOCKER_LM_QUICK_START.md` - Docker detalji
-- ?? `CONNECT_TO_DOCKER.md` - 3-step quick start
 - ?? `CHAT_INTERFACE.md` - chat docs
-- ?? `CHAT_QUICK_START.md` - brzi start za chat
 - ?? `IMPLEMENTATION_SUMMARY.md` - tehnièki pregled
 - ?? `BRANCH_SUMMARY.md` - branch overview
 - ?? `TRAINING_ESTIMATE_ENGLISH.md` - training context
@@ -200,10 +205,11 @@ a18b1bc feat: Add LM Adapter for hybrid Cognition + Language architecture
 
 ### Examples & Scripts
 - `examples/lm_example.cpp`
-- `scripts/setup_llama.ps1`
-- `scripts/setup_docker_lm.ps1`
-- `scripts/setup_ollama.ps1`
-- `scripts/convert_to_gguf.py`
+- `scripts/setup_llama.ps1` - llama.cpp setup
+- `scripts/setup_docker_lm.ps1` - Docker LM setup
+- `scripts/setup_ollama.ps1` - Ollama setup
+- `scripts/setup_imgui.ps1` - **ImGui automatic setup** ?
+- `scripts/convert_to_gguf.py` - HF to GGUF converter
 
 ### Data
 - `data/step_input_pool.csv` (100,000 generated inputs)
