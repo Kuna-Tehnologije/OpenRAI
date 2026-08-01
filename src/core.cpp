@@ -19,11 +19,11 @@
 
 namespace openrai {
 
-static constexpr int NODE_COUNT = 20;
-static constexpr int TOP_K = 4;
-static constexpr int TOP_OUTPUT = 2;
-static constexpr int REASONING_NODE_COUNT = 5;
-static constexpr int LOOP_WAIT_MS = 200;
+static constexpr int NODE_COUNT = 100;
+static constexpr int TOP_K = 10;
+static constexpr int TOP_OUTPUT = 4;
+static constexpr int REASONING_NODE_COUNT = 20;
+static constexpr int LOOP_WAIT_MS = 33;
 static constexpr const char* VECTOR_MEMORY_PATH = "data/vector_memory.db";
 static constexpr const char* STEP_INPUT_POOL_PATH = "data/openrai_math_1M.csv";
 
@@ -137,6 +137,13 @@ void OpenRAI::inject_input(const std::string& input) {
         std::lock_guard<std::mutex> lk(pending_mutex_);
         pending_inputs_.push(input);
     }
+
+    // Korisnik je odgovorio - resetuj waiting flag
+    {
+        std::lock_guard<std::mutex> lk(response_mutex_);
+        waiting_for_user_response_ = false;
+    }
+
     LOG("[INJECT] \"" << input << "\"");
 }
 
@@ -369,21 +376,63 @@ void OpenRAI::main_loop() {
                     LOG("[FINAL OUTPUT] " << final_text.str());
                     LOG("[VALUE] " << actual_value);
 
-                    // Rate limiting: 1 output svakih 5 sekundi
-                    auto now = std::chrono::steady_clock::now();
-                    auto time_since_last = std::chrono::duration_cast<std::chrono::seconds>(now - last_output_time).count();
+                    // Output samo ako je confidence >= 0.9
+                    if (reflection.confidence >= 0.9f) {
+                        auto now = std::chrono::steady_clock::now();
 
-                    if (time_since_last >= 5) {
-                        // Pošalji vector memory value string u GUI chat ako je callback postavljen
-                        if (output_callback_ && !context.empty()) {
-                            // Koristi best match iz vector memory, ne node data
-                            std::string memory_value = context.front().text;
-                            output_callback_(memory_value);
-                            last_output_time = now;
-                            LOG("[GUI OUTPUT] Sent to chat: \"" << memory_value << "\"");
+                        // Provjeri da li èekamo odgovor od korisnika
+                        bool waiting = false;
+                        {
+                            std::lock_guard<std::mutex> lk(response_mutex_);
+                            if (waiting_for_user_response_) {
+                                auto time_since_question = std::chrono::duration_cast<std::chrono::seconds>(
+                                    now - last_question_time_).count();
+
+                                if (time_since_question < 30) {
+                                    // Još èekamo odgovor (< 30s)
+                                    waiting = true;
+                                    LOG("[GUI OUTPUT] Waiting for user response (" << time_since_question << "s / 30s)");
+                                } else {
+                                    // Timeout - korisnik nije odgovorio u 30s, nastavi normalno
+                                    waiting_for_user_response_ = false;
+                                    LOG("[GUI OUTPUT] User response timeout (30s) - resuming outputs");
+                                }
+                            }
+                        }
+
+                        if (!waiting) {
+                            // Rate limiting: 1 output svakih 5 sekundi
+                            auto time_since_last = std::chrono::duration_cast<std::chrono::seconds>(now - last_output_time).count();
+
+                            if (time_since_last >= 5) {
+                                if (output_callback_ && !context.empty()) {
+                                    // Koristi best match iz vector memory, ne node data
+                                    std::string memory_value = context.front().text;
+
+                                    // PRVO: Generiši LLM response na osnovu memory value-a
+                                    LOG("[LM] Generating response for: \"" << memory_value << "\"");
+                                    std::string llm_response = generate_response(memory_value);
+
+                                    // Pošalji LLM response u GUI
+                                    output_callback_(llm_response);
+                                    last_output_time = now;
+
+                                    // Postavi waiting flag - èekamo odgovor korisnika
+                                    {
+                                        std::lock_guard<std::mutex> lk(response_mutex_);
+                                        waiting_for_user_response_ = true;
+                                        last_question_time_ = now;
+                                    }
+
+                                    LOG("[GUI OUTPUT] Sent LLM response to chat: \"" << llm_response << "\"");
+                                    LOG("[GUI OUTPUT] Waiting for user response (timeout: 30s)");
+                                }
+                            } else {
+                                LOG("[GUI OUTPUT] Skipped (cooldown: " << (5 - time_since_last) << "s remaining)");
+                            }
                         }
                     } else {
-                        LOG("[GUI OUTPUT] Skipped (cooldown: " << (5 - time_since_last) << "s remaining)");
+                        LOG("[GUI OUTPUT] Skipped (confidence too low: " << std::fixed << std::setprecision(3) << reflection.confidence << " < 0.9)");
                     }
 
                     ++iter_outputs;

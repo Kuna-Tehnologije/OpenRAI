@@ -90,6 +90,11 @@ private:
     // Callback for sending outputs to GUI
     OutputCallback           output_callback_;
 
+    // Waiting for user response tracking
+    std::atomic<bool>        waiting_for_user_response_{false};
+    std::chrono::steady_clock::time_point last_question_time_;
+    std::mutex               response_mutex_;
+
     void main_loop();
 };
 
