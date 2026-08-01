@@ -116,10 +116,122 @@ private:
 };
 
 // =============================================================================
+// Simple HTTP Backend (uses system curl - works on Windows 10+, no dependencies!)
+// =============================================================================
+class SimpleHTTPBackend : public ILanguageModel {
+public:
+    bool load(const LMConfig& config) override {
+        api_url_ = config.model_path;
+        if (api_url_.empty()) {
+            api_url_ = "http://localhost:8000";
+        }
+
+        std::cout << "[SimpleHTTPBackend] Connecting to Docker LM at " << api_url_ << "\n";
+        std::cout << "[SimpleHTTPBackend] Using system curl (Windows 10+ built-in)\n";
+
+        loaded_ = true; // Assume it works, will fail on first generate if not
+
+        std::cout << "[SimpleHTTPBackend] Ready to connect!\n";
+        std::cout << "[SimpleHTTPBackend] API: " << api_url_ << "/v1/completions\n";
+
+        return loaded_;
+    }
+
+    LMResponse generate(const std::string& prompt) override {
+        LMResponse response;
+
+        if (!loaded_) {
+            response.text = "[Error] HTTP backend not connected";
+            return response;
+        }
+
+        // Escape quotes in prompt for shell
+        std::string escaped_prompt = prompt;
+        for (size_t pos = 0; (pos = escaped_prompt.find("\"", pos)) != std::string::npos; pos += 2) {
+            escaped_prompt.replace(pos, 1, "\\\"");
+        }
+        // Limit prompt length for shell safety
+        if (escaped_prompt.size() > 200) {
+            escaped_prompt = escaped_prompt.substr(0, 200) + "...";
+        }
+
+        // Build curl command for vLLM/OpenAI-compatible API
+        std::ostringstream cmd;
+        cmd << "curl -s -X POST " << api_url_ << "/v1/completions "
+            << "-H \"Content-Type: application/json\" "
+            << "-d \"{\\\"prompt\\\":\\\"" << escaped_prompt << "\\\","
+            << "\\\"max_tokens\\\":512,"
+            << "\\\"temperature\\\":0.7}\" 2>&1";
+
+        std::cout << "[SimpleHTTPBackend] Calling API...\n";
+
+        // Execute curl
+        FILE* pipe = _popen(cmd.str().c_str(), "r");
+        if (!pipe) {
+            response.text = "[Error] Failed to execute curl - is it installed?";
+            return response;
+        }
+
+        char buffer[256];
+        std::string result;
+        while (fgets(buffer, sizeof(buffer), pipe) != NULL) {
+            result += buffer;
+        }
+        int exit_code = _pclose(pipe);
+
+        if (exit_code != 0) {
+            response.text = "[Error] curl failed with code " + std::to_string(exit_code);
+            std::cout << "[SimpleHTTPBackend] Error: " << result << "\n";
+            return response;
+        }
+
+        // Simple JSON parsing - extract "text" field
+        size_t text_start = result.find("\"text\":\"");
+        if (text_start != std::string::npos) {
+            text_start += 8; // Skip "text":"
+            size_t text_end = result.find("\"", text_start);
+            if (text_end != std::string::npos) {
+                response.text = result.substr(text_start, text_end - text_start);
+                response.confidence = 0.9f;
+                response.tokens_used = static_cast<int>(response.text.size() / 4);
+
+                std::cout << "[SimpleHTTPBackend] ? Generated " << response.text.size() 
+                         << " chars\n";
+            } else {
+                response.text = "[Error] Failed to parse JSON response (no closing quote)";
+            }
+        } else {
+            // Maybe different API format - return first 200 chars
+            response.text = "[API Response] " + result.substr(0, 200);
+            std::cout << "[SimpleHTTPBackend] Warning: Unexpected response format\n";
+            std::cout << "Full response: " << result << "\n";
+        }
+
+        return response;
+    }
+
+    std::vector<float> embed(const std::string& text) override {
+        return std::vector<float>(768, 0.5f);
+    }
+
+    bool is_loaded() const override { return loaded_; }
+
+    std::string model_info() const override {
+        return "Simple HTTP Backend (curl) @ " + api_url_;
+    }
+
+private:
+    std::string api_url_;
+    bool loaded_ = false;
+};
+
+// =============================================================================
 // LM Factory
 // =============================================================================
 std::unique_ptr<ILanguageModel> LMFactory::create(const std::string& model_type) {
-    if (model_type == "llama") {
+    if (model_type == "http" || model_type == "docker") {
+        return std::make_unique<SimpleHTTPBackend>();
+    } else if (model_type == "llama") {
         return std::make_unique<LlamaCppBackend>();
     } else if (model_type == "onnx" || model_type == "qwen") {
         return std::make_unique<ONNXBackend>();
