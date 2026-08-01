@@ -127,13 +127,25 @@ public:
             api_url_ = "http://localhost:8000";
         }
 
-        std::cout << "[SimpleHTTPBackend] Connecting to Docker LM at " << api_url_ << "\n";
+        // Detect API style based on URL/port
+        if (api_url_.find(":1337") != std::string::npos || 
+            api_url_.find("/v1") != std::string::npos) {
+            api_style_ = "openai";  // OpenAI-compatible API
+            endpoint_ = "/v1/completions";
+            std::cout << "[SimpleHTTPBackend] Using OpenAI-compatible API\n";
+        } else {
+            api_style_ = "ollama";  // Ollama/Docker Model Runner API
+            endpoint_ = "/api/generate";
+            std::cout << "[SimpleHTTPBackend] Using Ollama-compatible API\n";
+        }
+
+        std::cout << "[SimpleHTTPBackend] Connecting to LM at " << api_url_ << "\n";
         std::cout << "[SimpleHTTPBackend] Using system curl (Windows 10+ built-in)\n";
 
         loaded_ = true; // Assume it works, will fail on first generate if not
 
         std::cout << "[SimpleHTTPBackend] Ready to connect!\n";
-        std::cout << "[SimpleHTTPBackend] API: " << api_url_ << "/api/generate\n";
+        std::cout << "[SimpleHTTPBackend] API: " << api_url_ << endpoint_ << "\n";
 
         return loaded_;
     }
@@ -146,23 +158,19 @@ public:
             return response;
         }
 
-        // Escape quotes in prompt for JSON
-        std::string escaped_prompt = prompt;
-        for (size_t pos = 0; (pos = escaped_prompt.find("\"", pos)) != std::string::npos; pos += 2) {
-            escaped_prompt.replace(pos, 1, "\\\"");
-        }
-        // Also escape newlines
-        for (size_t pos = 0; (pos = escaped_prompt.find("\n", pos)) != std::string::npos; pos += 2) {
-            escaped_prompt.replace(pos, 1, "\\n");
-        }
-        // Also escape backslashes
-        for (size_t pos = 0; (pos = escaped_prompt.find("\\", pos)) != std::string::npos; pos += 2) {
-            if (pos + 1 < escaped_prompt.size() && 
-                (escaped_prompt[pos + 1] == '\"' || escaped_prompt[pos + 1] == 'n')) {
-                pos++; // Skip already escaped
-                continue;
+        // Escape string for JSON (backslash first, then quotes, then newlines)
+        std::string escaped_prompt;
+        escaped_prompt.reserve(prompt.size() * 2);
+
+        for (char c : prompt) {
+            switch (c) {
+                case '\\': escaped_prompt += "\\\\"; break;
+                case '\"': escaped_prompt += "\\\""; break;
+                case '\n': escaped_prompt += "\\n"; break;
+                case '\r': escaped_prompt += "\\r"; break;
+                case '\t': escaped_prompt += "\\t"; break;
+                default: escaped_prompt += c; break;
             }
-            escaped_prompt.replace(pos, 1, "\\\\");
         }
 
         // Limit prompt length
@@ -178,16 +186,29 @@ public:
                 response.text = "[Error] Failed to create temp request file";
                 return response;
             }
-            file << "{"
-                 << "\"model\":\"docker.io/ai/smollm2:latest\","
-                 << "\"prompt\":\"" << escaped_prompt << "\","
-                 << "\"stream\":false"
-                 << "}";
+
+            if (api_style_ == "openai") {
+                // OpenAI-compatible format
+                file << "{"
+                     << "\"model\":\"qwen2_5-0_5b-instruct-q2_k\","
+                     << "\"prompt\":\"" << escaped_prompt << "\","
+                     << "\"max_tokens\":512,"
+                     << "\"temperature\":0.7,"
+                     << "\"stream\":false"
+                     << "}";
+            } else {
+                // Ollama/Docker Model Runner format
+                file << "{"
+                     << "\"model\":\"docker.io/ai/smollm2:latest\","
+                     << "\"prompt\":\"" << escaped_prompt << "\","
+                     << "\"stream\":false"
+                     << "}";
+            }
         }
 
         // Build curl command using temp file
         std::ostringstream cmd;
-        cmd << "curl.exe -s -X POST " << api_url_ << "/api/generate "
+        cmd << "curl.exe -s -X POST " << api_url_ << endpoint_ << " "
             << "-H \"Content-Type: application/json\" "
             << "--data-binary \"@" << temp_file << "\" 2>&1";
 
@@ -213,26 +234,49 @@ public:
             return response;
         }
 
-        // Simple JSON parsing - extract "response" field (Docker Model Runner / Ollama format)
-        size_t text_start = result.find("\"response\":\"");
-        if (text_start != std::string::npos) {
-            text_start += 12; // Skip "response":"
-            size_t text_end = result.find("\"", text_start);
-            if (text_end != std::string::npos) {
-                response.text = result.substr(text_start, text_end - text_start);
-                response.confidence = 0.9f;
-                response.tokens_used = static_cast<int>(response.text.size() / 4);
+        // Parse response based on API style
+        if (api_style_ == "openai") {
+            // OpenAI format: {"choices":[{"text":"..."}]}
+            size_t text_start = result.find("\"text\":\"");
+            if (text_start != std::string::npos) {
+                text_start += 8; // Skip "text":"
+                size_t text_end = result.find("\"", text_start);
+                if (text_end != std::string::npos) {
+                    response.text = result.substr(text_start, text_end - text_start);
+                    response.confidence = 0.9f;
+                    response.tokens_used = static_cast<int>(response.text.size() / 4);
 
-                std::cout << "[SimpleHTTPBackend] ? Generated " << response.text.size() 
-                         << " chars\n";
+                    std::cout << "[SimpleHTTPBackend] ? Generated " << response.text.size() 
+                             << " chars\n";
+                } else {
+                    response.text = "[Error] Failed to parse OpenAI response (no closing quote)";
+                }
             } else {
-                response.text = "[Error] Failed to parse JSON response (no closing quote)";
+                response.text = "[API Response] " + result.substr(0, 200);
+                std::cout << "[SimpleHTTPBackend] Warning: Unexpected OpenAI response format\n";
+                std::cout << "Full response: " << result << "\n";
             }
         } else {
-            // Maybe different API format - return first 200 chars
-            response.text = "[API Response] " + result.substr(0, 200);
-            std::cout << "[SimpleHTTPBackend] Warning: Unexpected response format\n";
-            std::cout << "Full response: " << result << "\n";
+            // Ollama format: {"response":"..."}
+            size_t text_start = result.find("\"response\":\"");
+            if (text_start != std::string::npos) {
+                text_start += 12; // Skip "response":"
+                size_t text_end = result.find("\"", text_start);
+                if (text_end != std::string::npos) {
+                    response.text = result.substr(text_start, text_end - text_start);
+                    response.confidence = 0.9f;
+                    response.tokens_used = static_cast<int>(response.text.size() / 4);
+
+                    std::cout << "[SimpleHTTPBackend] ? Generated " << response.text.size() 
+                             << " chars\n";
+                } else {
+                    response.text = "[Error] Failed to parse Ollama response (no closing quote)";
+                }
+            } else {
+                response.text = "[API Response] " + result.substr(0, 200);
+                std::cout << "[SimpleHTTPBackend] Warning: Unexpected Ollama response format\n";
+                std::cout << "Full response: " << result << "\n";
+            }
         }
 
         return response;
@@ -250,6 +294,8 @@ public:
 
 private:
     std::string api_url_;
+    std::string api_style_;  // "openai" or "ollama"
+    std::string endpoint_;   // "/v1/completions" or "/api/generate"
     bool loaded_ = false;
 };
 
