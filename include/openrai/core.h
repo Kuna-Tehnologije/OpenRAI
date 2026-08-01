@@ -15,14 +15,20 @@ class MemorySystem;
 class ThreadPool;
 class GPUJobQueue;
 class ReasoningModule;
-class GPUNeuralNet;     // Phase 2 — CUDA backed
+class GPUNeuralNet;
+class Tokenizer;
+class EmbeddingLayer;
+class VectorMemory;
+class KnowledgeGraph;
+class GoalSystem;
+class SelfReflection;
 
 // Core output structure
 struct Output {
     std::string data;
     float relevance_score   = 0.0f;
     float importance_score  = 0.0f;
-    bool  nn_should_output  = false;   // decision from NN
+    bool  nn_should_output  = false;
     std::chrono::system_clock::time_point timestamp;
     int thread_id = 0;
 };
@@ -54,6 +60,14 @@ private:
     std::unique_ptr<GPUJobQueue>     gpu_queue_;
     std::unique_ptr<ReasoningModule> reasoning_module_;
     std::unique_ptr<GPUNeuralNet>    gpu_nn_;           // Phase 2
+
+    // Semantic pipeline
+    std::unique_ptr<Tokenizer>       tokenizer_;
+    std::unique_ptr<EmbeddingLayer>  embedding_layer_;
+    std::unique_ptr<VectorMemory>    vector_memory_;
+    std::unique_ptr<KnowledgeGraph>  knowledge_graph_;
+    std::unique_ptr<GoalSystem>      goal_system_;
+    std::unique_ptr<SelfReflection>  self_reflection_;
 
     std::atomic<bool>        is_running_{false};
 

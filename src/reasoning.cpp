@@ -2,6 +2,7 @@
 #include <openrai/log.h>
 #include <iomanip>
 #include <cmath>
+#include <sstream>
 
 namespace openrai {
 
@@ -17,8 +18,8 @@ void ReasoningModule::analyze(const std::vector<Output>& short_term_memory) {
     LOG("[Reasoning] Long-term context hits: " << long_term.size());
 
     for (const auto& output : short_term_memory) {
-        float importance = output.importance_score;
-        bool  should_out = output.nn_should_output;
+        const float importance = output.importance_score;
+        const bool should_out = output.nn_should_output;
 
         std::ostringstream ss;
         ss << std::fixed << std::setprecision(3)
@@ -27,8 +28,9 @@ void ReasoningModule::analyze(const std::vector<Output>& short_term_memory) {
            << "  out=" << (should_out ? "YES" : "no");
         LOG(ss.str());
 
-        if (should_out)
-            LOG("[OUTPUT] << " << output.data << "  (imp=" << importance << ")");
+        if (should_out) {
+            LOG("[CANDIDATE OUTPUT] " << output.data << "  (importance=" << importance << ")");
+        }
 
         MemoryEntry entry;
         entry.content    = output.data;
