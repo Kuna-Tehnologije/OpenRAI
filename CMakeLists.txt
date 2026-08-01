@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Find required packages
 find_package(Threads REQUIRED)
+find_package(imgui CONFIG REQUIRED)
 
 # Include directories
 include_directories(${PROJECT_SOURCE_DIR}/include)
@@ -47,12 +48,14 @@ endif()
 # -----------------------------------------------------------------------
 # Sources
 # -----------------------------------------------------------------------
-# Core sources (exclude main files)
+# Core sources (exclude main files and GUI variants)
 file(GLOB CPP_SOURCES "src/*.cpp")
 list(REMOVE_ITEM CPP_SOURCES 
     "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/main_chat.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/chat_gui_imgui.cpp"  # ImGui version - not yet integrated
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/chat_gui.cpp"        # Console version
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/chat_gui_win32.cpp"  # Win32 native GUI
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/chat_gui_imgui.cpp"  # ImGui version (future)
 )
 
 if(CUDA_ENABLED)
@@ -69,8 +72,8 @@ if(CUDA_ENABLED)
     )
     target_link_libraries(openrai PRIVATE Threads::Threads cudart cublas)
 
-    # Chat executable (new GUI interface)
-    add_executable(openrai_chat src/main_chat.cpp ${CPP_SOURCES} ${CUDA_SOURCES})
+    # Chat executable - Console version
+    add_executable(openrai_chat src/main_chat.cpp src/chat_gui.cpp ${CPP_SOURCES} ${CUDA_SOURCES})
     set_target_properties(openrai_chat PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON
         CUDA_RESOLVE_DEVICE_SYMBOLS ON
@@ -79,12 +82,30 @@ if(CUDA_ENABLED)
         ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}
     )
     target_link_libraries(openrai_chat PRIVATE Threads::Threads cudart cublas)
+
+    # Chat GUI executable - Windows native UI (NO DEPENDENCIES!)
+    add_executable(openrai_chat_gui WIN32 src/main_chat.cpp src/chat_gui_win32.cpp ${CPP_SOURCES} ${CUDA_SOURCES})
+    set_target_properties(openrai_chat_gui PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON
+        CUDA_RESOLVE_DEVICE_SYMBOLS ON
+    )
+    target_include_directories(openrai_chat_gui PRIVATE
+        ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}
+    )
+    target_link_libraries(openrai_chat_gui PRIVATE Threads::Threads cudart cublas comctl32)
+    target_compile_definitions(openrai_chat_gui PRIVATE OPENRAI_WIN32_GUI)
 else()
     # Main executable (original OpenRAI)
     add_executable(openrai src/main.cpp ${CPP_SOURCES})
     target_link_libraries(openrai PRIVATE Threads::Threads)
 
-    # Chat executable (new GUI interface)
-    add_executable(openrai_chat src/main_chat.cpp ${CPP_SOURCES})
+    # Chat executable - Console version
+    add_executable(openrai_chat src/main_chat.cpp src/chat_gui.cpp ${CPP_SOURCES})
     target_link_libraries(openrai_chat PRIVATE Threads::Threads)
+
+    # Chat GUI executable - Windows native UI (NO DEPENDENCIES!)
+    add_executable(openrai_chat_gui WIN32 src/main_chat.cpp src/chat_gui_win32.cpp ${CPP_SOURCES})
+    target_link_libraries(openrai_chat_gui PRIVATE Threads::Threads comctl32)
+    target_compile_definitions(openrai_chat_gui PRIVATE OPENRAI_WIN32_GUI)
 endif()
+
