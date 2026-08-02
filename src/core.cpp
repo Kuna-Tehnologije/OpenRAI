@@ -416,8 +416,8 @@ void OpenRAI::main_loop() {
                         latest_confidence_ = reflection.confidence;
                     }
 
-                    // Output samo ako je confidence >= 0.75
-                    if (reflection.confidence >= 0.75f) {
+                    // Output samo ako je confidence >= 0.7
+                    if (reflection.confidence >= 0.7f) {
                         auto now = std::chrono::steady_clock::now();
 
                         // Provjeri da li èekamo odgovor od korisnika
@@ -428,8 +428,8 @@ void OpenRAI::main_loop() {
                                 auto time_since_question = std::chrono::duration_cast<std::chrono::seconds>(
                                     now - last_question_time_).count();
 
-                                if (time_since_question < 30) {
-                                    // Još èekamo odgovor (< 30s)
+                                if (time_since_question < 60) {
+                                    // Još èekamo odgovor (< 60s)
                                     waiting = true;
                                     LOG("[GUI OUTPUT] Waiting for user response (" << time_since_question << "s / 30s)");
                                 } else {
@@ -441,17 +441,24 @@ void OpenRAI::main_loop() {
                         }
 
                         if (!waiting) {
-                            // Rate limiting: 1 output svakih 5 sekundi
+                            // Rate limiting: 1 output svakih 30 sekundi
                             auto time_since_last = std::chrono::duration_cast<std::chrono::seconds>(now - last_output_time).count();
 
-                            if (time_since_last >= 5 && !output_sent_this_iteration) {
+                            if (time_since_last >= 30 && !output_sent_this_iteration) {
                                 if (output_callback_ && !context.empty()) {
                                     // Koristi best match iz vector memory, ne node data
                                     std::string memory_value = context.front().text;
 
                                     // PRVO: Generiši LLM response na osnovu memory value-a
                                     LOG("[LM] Generating response for: \"" << memory_value << "\"");
-                                    std::string llm_response = generate_response(memory_value);
+
+									std::string llm_prompt = std::string("You are OpenRAI Engine. Based on the following information, provide a concise and clear response:\n\n")
+										+ std::string("This is the information before being processed:\n")
+										+ std::string(last_step_input_pool + "\n\n")
+                                        + std::string("This is information retrieved from the vector memory:\n")
+                                        + std::string(memory_value);
+
+                                    std::string llm_response = generate_response(llm_prompt);
 
                                     // Pošalji LLM response u GUI
                                     output_callback_(llm_response);
