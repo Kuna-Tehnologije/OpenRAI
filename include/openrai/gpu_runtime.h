@@ -73,8 +73,15 @@ public:
     bool is_cuda_active() const { return cuda_active_; }
     void print_summary()  const;
 
+    void set_device(int gpu_id);
+    void set_use_fp16(bool enable);
+    bool is_fp16_enabled() const { return use_fp16_; }
+    int get_device() const { return device_id_; }
+
 private:
     bool  cuda_active_ = false;
+    bool  use_fp16_ = false;
+    int   device_id_ = 0;
 
     // ---- Device pointers (null when CUDA disabled) ----
     void* d_w0_ = nullptr;   float* d_b0_ = nullptr;   // 32->16384
@@ -104,9 +111,25 @@ private:
     std::vector<float> h_w10_, h_b10_;
     std::vector<float> h_w11_, h_b11_;
 
+    // ---- Host-side fp16 weight copies (for fp16 mode) ----
+    std::vector<uint16_t> h_w0_fp16_, h_b0_fp16_;
+    std::vector<uint16_t> h_w1_fp16_, h_b1_fp16_;
+    std::vector<uint16_t> h_w2_fp16_, h_b2_fp16_;
+    std::vector<uint16_t> h_w3_fp16_, h_b3_fp16_;
+    std::vector<uint16_t> h_w4_fp16_, h_b4_fp16_;
+    std::vector<uint16_t> h_w5_fp16_, h_b5_fp16_;
+    std::vector<uint16_t> h_w6_fp16_, h_b6_fp16_;
+    std::vector<uint16_t> h_w7_fp16_, h_b7_fp16_;
+    std::vector<uint16_t> h_w8_fp16_, h_b8_fp16_;
+    std::vector<uint16_t> h_w9_fp16_, h_b9_fp16_;
+    std::vector<uint16_t> h_w10_fp16_, h_b10_fp16_;
+    std::vector<uint16_t> h_w11_fp16_, h_b11_fp16_;
+
     void init_weights(unsigned seed);
     void upload_weights_to_device();
     void cpu_forward(const float* input, float* output) const;
+    void convert_weights_to_fp16();
+    void free_device_weights();
 };
 
 // -----------------------------------------------------------------------

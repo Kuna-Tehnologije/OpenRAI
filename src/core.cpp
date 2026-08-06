@@ -7,6 +7,7 @@
 #include <openrai/semantic.h>
 #include <openrai/lm_adapter.h>
 #include <openrai/vector_db.h>
+#include <openrai/node.h>
 #include <openrai/log.h>
 
 #include <algorithm>
@@ -75,7 +76,8 @@ OpenRAI::OpenRAI()
       vector_db_(std::make_unique<VectorDatabase>()),                // SQL-based vector DB
       knowledge_graph_(std::make_unique<KnowledgeGraph>()),
       goal_system_(std::make_unique<GoalSystem>()),
-      self_reflection_(std::make_unique<SelfReflection>())
+      self_reflection_(std::make_unique<SelfReflection>()),
+      node_manager_(std::make_unique<NodeManager>())                 // Priority 5: Orchestration
 {
     vector_memory_->set_persistence_path(VECTOR_MEMORY_PATH);
     if (vector_memory_->load_from_disk(VECTOR_MEMORY_PATH)) {
@@ -110,12 +112,16 @@ OpenRAI::OpenRAI()
         LOG("[LMAdapter] Warning: Language layer not available");
     }
 
+    // Initialize node-based orchestration system (Priority 5)
+    initialize_nodes();
+
     LOG("[OpenRAI] Engine initialized"
         << " nodes=" << NODE_COUNT
         << " threads=" << NODE_COUNT
         << " gpu_slots=128"
         << " semantic=on"
-        << " language=" << (lm_adapter_->is_ready() ? "on" : "mock"));
+        << " language=" << (lm_adapter_->is_ready() ? "on" : "mock")
+        << " orchestration_nodes=" << node_manager_->node_count());
     gpu_nn_->print_summary();
 }
 
@@ -160,6 +166,11 @@ void OpenRAI::inject_input(const std::string& input) {
     }
 
     LOG("[INJECT] \"" << input << "\"");
+
+    // Priority 5: Trigger orchestration for immediate intelligent response
+    if (node_manager_ && node_manager_->node_count() > 0) {
+        process_with_orchestration(input);
+    }
 }
 
 std::string OpenRAI::generate_response(const std::string& prompt) {
@@ -519,6 +530,171 @@ void OpenRAI::main_loop() {
     }
 
     LOG("=== OPENRAI MAIN LOOP STOPPED ===");
+}
+
+// -----------------------------------------------------------------------
+// Priority 5: Orchestration methods
+// -----------------------------------------------------------------------
+
+void OpenRAI::initialize_nodes() {
+    LOG("[Orchestration] Initializing node-based system...");
+
+    // Create specialized nodes on different GPUs for load distribution
+    node_manager_->register_node(std::make_unique<Node>("Memory_Master", NodeSpecialty::Memory, 0));
+    node_manager_->register_node(std::make_unique<Node>("Retrieval_Main", NodeSpecialty::Retrieval, 0));
+    node_manager_->register_node(std::make_unique<Node>("Reasoning_Core", NodeSpecialty::Reasoning, 1));
+    node_manager_->register_node(std::make_unique<Node>("Planning_Agent", NodeSpecialty::Planning, 1));
+    node_manager_->register_node(std::make_unique<Node>("Coding_Helper", NodeSpecialty::Coding, 2));
+    node_manager_->register_node(std::make_unique<Node>("Analysis_Engine", NodeSpecialty::Analysis, 2));
+    node_manager_->register_node(std::make_unique<Node>("Integration_Hub", NodeSpecialty::Integration, 3));
+    node_manager_->register_node(std::make_unique<Node>("Formatter_Output", NodeSpecialty::Formatter, 3));
+
+    LOG("[Orchestration] Registered " << node_manager_->node_count() << " specialized nodes");
+}
+
+std::vector<std::string> OpenRAI::determine_relevant_nodes(const std::string& input) {
+    std::vector<std::string> nodes;
+
+    // Convert input to lowercase for keyword matching
+    std::string lower_input = input;
+    std::transform(lower_input.begin(), lower_input.end(), lower_input.begin(), ::tolower);
+
+    // Always include retrieval for context
+    nodes.push_back("Retrieval_Main");
+
+    // Keyword-based node selection
+    if (lower_input.find("code") != std::string::npos ||
+        lower_input.find("function") != std::string::npos ||
+        lower_input.find("program") != std::string::npos ||
+        lower_input.find("algorithm") != std::string::npos) {
+        nodes.push_back("Coding_Helper");
+    }
+
+    if (lower_input.find("plan") != std::string::npos ||
+        lower_input.find("strategy") != std::string::npos ||
+        lower_input.find("steps") != std::string::npos ||
+        lower_input.find("how to") != std::string::npos) {
+        nodes.push_back("Planning_Agent");
+    }
+
+    if (lower_input.find("why") != std::string::npos ||
+        lower_input.find("because") != std::string::npos ||
+        lower_input.find("reason") != std::string::npos ||
+        lower_input.find("explain") != std::string::npos ||
+        lower_input.find("analyze") != std::string::npos) {
+        nodes.push_back("Reasoning_Core");
+    }
+
+    if (lower_input.find("remember") != std::string::npos ||
+        lower_input.find("store") != std::string::npos ||
+        lower_input.find("save") != std::string::npos ||
+        lower_input.find("recall") != std::string::npos) {
+        nodes.push_back("Memory_Master");
+    }
+
+    if (lower_input.find("data") != std::string::npos ||
+        lower_input.find("pattern") != std::string::npos ||
+        lower_input.find("trend") != std::string::npos ||
+        lower_input.find("analysis") != std::string::npos) {
+        nodes.push_back("Analysis_Engine");
+    }
+
+    // Always include reasoning if no specific nodes matched (default fallback)
+    if (nodes.size() == 1) { // Only retrieval
+        nodes.push_back("Reasoning_Core");
+    }
+
+    // Always include formatter for output structuring
+    nodes.push_back("Formatter_Output");
+
+    return nodes;
+}
+
+std::string OpenRAI::synthesize_llm_prompt(
+    const std::vector<std::string>& node_summaries,
+    const std::string& original_input)
+{
+    std::ostringstream prompt;
+
+    prompt << "You are OpenRAI Engine, an advanced cognitive AI system.\n\n";
+    prompt << "User Input: " << original_input << "\n\n";
+    prompt << "Specialized Node Analysis:\n";
+
+    for (size_t i = 0; i < node_summaries.size(); ++i) {
+        prompt << (i + 1) << ". " << node_summaries[i] << "\n";
+    }
+
+    prompt << "\nBased on the above specialized analysis from multiple cognitive nodes, "
+           << "provide a clear, concise, and helpful response to the user's input. "
+           << "Synthesize the information from all nodes into a coherent answer.";
+
+    return prompt.str();
+}
+
+void OpenRAI::process_with_orchestration(const std::string& input) {
+    LOG("[Orchestration] Processing input: \"" << input << "\"");
+
+    // Step 1: Determine which nodes are relevant for this input
+    auto selected_nodes = determine_relevant_nodes(input);
+    LOG("[Orchestration] Selected " << selected_nodes.size() << " nodes: "
+        << [&]() {
+            std::ostringstream oss;
+            for (size_t i = 0; i < selected_nodes.size(); ++i) {
+                if (i > 0) oss << ", ";
+                oss << selected_nodes[i];
+            }
+            return oss.str();
+        }());
+
+    // Step 2: Prepare input for nodes
+    NodeInput node_input;
+    node_input.text = input;
+    node_input.priority = 0.8f;
+
+    // Generate embedding for context search
+    auto tokens = tokenizer_->tokenize(input);
+    node_input.embedding = embedding_layer_->embed(tokens);
+
+    // Step 3: Process in parallel across selected nodes
+    auto node_outputs = node_manager_->process_parallel(selected_nodes, node_input);
+
+    // Step 4: Collect summaries
+    std::vector<std::string> summaries;
+    float avg_confidence = 0.0f;
+    for (const auto& output : node_outputs) {
+        summaries.push_back(output.summary);
+        avg_confidence += output.confidence;
+        LOG("[Orchestration] Node output: " << output.summary 
+            << " (conf=" << output.confidence << ")");
+    }
+    if (!node_outputs.empty()) {
+        avg_confidence /= node_outputs.size();
+    }
+
+    // Step 5: Synthesize LLM prompt from node outputs
+    std::string llm_prompt = synthesize_llm_prompt(summaries, input);
+
+    // Step 6: Generate final response using LM
+    std::string final_response = generate_response(llm_prompt);
+
+    // Step 7: Update stats
+    {
+        std::lock_guard<std::mutex> lk(stats_mutex_);
+        latest_output_ = final_response;
+        latest_confidence_ = avg_confidence;
+    }
+
+    // Step 8: Send to GUI callback
+    if (output_callback_) {
+        output_callback_(final_response);
+        LOG("[Orchestration] Sent response to GUI (confidence=" 
+            << std::fixed << std::setprecision(3) << avg_confidence << ")");
+    }
+
+    // Step 9: Store in vector database for future reference
+    if (avg_confidence > 0.7f && vector_db_) {
+        vector_db_->store(final_response, node_input.embedding, "orchestration");
+    }
 }
 
 } // namespace openrai

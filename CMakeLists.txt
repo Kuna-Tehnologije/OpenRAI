@@ -63,6 +63,7 @@ list(REMOVE_ITEM CPP_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/chat_gui.cpp"        # Console version
     "${CMAKE_CURRENT_SOURCE_DIR}/src/chat_gui_win32.cpp"  # Win32 native GUI
     "${CMAKE_CURRENT_SOURCE_DIR}/src/chat_gui_imgui.cpp"  # ImGui version (future)
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/test_nodes.cpp"      # Test executable with main()
 )
 
 if(CUDA_ENABLED)
@@ -114,5 +115,38 @@ else()
     add_executable(openrai_chat_gui WIN32 src/main_chat.cpp src/chat_gui_win32.cpp ${CPP_SOURCES} ${SQLITE_SOURCE})
     target_link_libraries(openrai_chat_gui PRIVATE Threads::Threads comctl32)
     target_compile_definitions(openrai_chat_gui PRIVATE OPENRAI_WIN32_GUI)
+endif()
+
+# -----------------------------------------------------------------------
+# Test executables
+# -----------------------------------------------------------------------
+if(CUDA_ENABLED)
+    add_executable(test_nodes src/test_nodes.cpp ${CPP_SOURCES} ${CUDA_SOURCES} ${SQLITE_SOURCE})
+    set_target_properties(test_nodes PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON
+        CUDA_RESOLVE_DEVICE_SYMBOLS ON
+    )
+    target_include_directories(test_nodes PRIVATE
+        ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}
+    )
+    target_link_libraries(test_nodes PRIVATE Threads::Threads cudart cublas)
+
+    # Node task timeout demo (Priority 6)
+    add_executable(node_task_timeout_demo examples/node_task_timeout_demo.cpp ${CPP_SOURCES} ${CUDA_SOURCES} ${SQLITE_SOURCE})
+    set_target_properties(node_task_timeout_demo PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON
+        CUDA_RESOLVE_DEVICE_SYMBOLS ON
+    )
+    target_include_directories(node_task_timeout_demo PRIVATE
+        ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}
+    )
+    target_link_libraries(node_task_timeout_demo PRIVATE Threads::Threads cudart cublas)
+else()
+    add_executable(test_nodes src/test_nodes.cpp ${CPP_SOURCES} ${SQLITE_SOURCE})
+    target_link_libraries(test_nodes PRIVATE Threads::Threads)
+
+    # Node task timeout demo (Priority 6)
+    add_executable(node_task_timeout_demo examples/node_task_timeout_demo.cpp ${CPP_SOURCES} ${SQLITE_SOURCE})
+    target_link_libraries(node_task_timeout_demo PRIVATE Threads::Threads)
 endif()
 

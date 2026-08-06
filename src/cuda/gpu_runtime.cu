@@ -5,12 +5,18 @@
 //
 //   This file is compiled by nvcc when OPENRAI_CUDA_ENABLED is defined,
 //   otherwise gpu_runtime_cpu.cpp provides the CPU-only implementation.
+//
+//   FP16 Support:
+//     When use_fp16_ is enabled, weights are converted to half precision
+//     and stored on device as __half. Inference still uses float32 for
+//     activations to maintain numerical stability.
 // -----------------------------------------------------------------------
 
 #include <openrai/gpu_runtime.h>
 #include <openrai/log.h>
 
 #include <cuda_runtime.h>
+#include <cuda_fp16.h>
 #include <cmath>
 #include <cstring>
 #include <random>
@@ -76,6 +82,21 @@ static void xavier_init(std::vector<float>& w,
 }
 
 // -----------------------------------------------------------------------
+// FP32 to FP16 conversion helpers
+// -----------------------------------------------------------------------
+static uint16_t float32_to_fp16(float f) {
+    __half h = __float2half(f);
+    return *reinterpret_cast<uint16_t*>(&h);
+}
+
+static void convert_vec_to_fp16(const std::vector<float>& src, std::vector<uint16_t>& dst) {
+    dst.resize(src.size());
+    for (size_t i = 0; i < src.size(); ++i) {
+        dst[i] = float32_to_fp16(src[i]);
+    }
+}
+
+// -----------------------------------------------------------------------
 // GPUNeuralNet constructor
 // -----------------------------------------------------------------------
 GPUNeuralNet::GPUNeuralNet() {
@@ -108,44 +129,62 @@ void GPUNeuralNet::init_weights(unsigned seed) {
 }
 
 // -----------------------------------------------------------------------
-// Upload weights to device
+// convert_weights_to_fp16 - Convert all fp32 weights to fp16
 // -----------------------------------------------------------------------
-static float* upload(const std::vector<float>& h) {
-    float* d = nullptr;
-    CUDA_CHECK(cudaMalloc(&d, h.size() * sizeof(float)));
-    CUDA_CHECK(cudaMemcpy(d, h.data(),
-                          h.size() * sizeof(float),
-                          cudaMemcpyHostToDevice));
-    return d;
+void GPUNeuralNet::convert_weights_to_fp16() {
+    convert_vec_to_fp16(h_w0_, h_w0_fp16_);   convert_vec_to_fp16(h_b0_, h_b0_fp16_);
+    convert_vec_to_fp16(h_w1_, h_w1_fp16_);   convert_vec_to_fp16(h_b1_, h_b1_fp16_);
+    convert_vec_to_fp16(h_w2_, h_w2_fp16_);   convert_vec_to_fp16(h_b2_, h_b2_fp16_);
+    convert_vec_to_fp16(h_w3_, h_w3_fp16_);   convert_vec_to_fp16(h_b3_, h_b3_fp16_);
+    convert_vec_to_fp16(h_w4_, h_w4_fp16_);   convert_vec_to_fp16(h_b4_, h_b4_fp16_);
+    convert_vec_to_fp16(h_w5_, h_w5_fp16_);   convert_vec_to_fp16(h_b5_, h_b5_fp16_);
+    convert_vec_to_fp16(h_w6_, h_w6_fp16_);   convert_vec_to_fp16(h_b6_, h_b6_fp16_);
+    convert_vec_to_fp16(h_w7_, h_w7_fp16_);   convert_vec_to_fp16(h_b7_, h_b7_fp16_);
+    convert_vec_to_fp16(h_w8_, h_w8_fp16_);   convert_vec_to_fp16(h_b8_, h_b8_fp16_);
+    convert_vec_to_fp16(h_w9_, h_w9_fp16_);   convert_vec_to_fp16(h_b9_, h_b9_fp16_);
+    convert_vec_to_fp16(h_w10_, h_w10_fp16_); convert_vec_to_fp16(h_b10_, h_b10_fp16_);
+    convert_vec_to_fp16(h_w11_, h_w11_fp16_); convert_vec_to_fp16(h_b11_, h_b11_fp16_);
 }
 
-void GPUNeuralNet::upload_weights_to_device() {
-    try {
-        d_w0_ = upload(h_w0_);  d_b0_ = upload(h_b0_);
-        d_w1_ = upload(h_w1_);  d_b1_ = upload(h_b1_);
-        d_w2_ = upload(h_w2_);  d_b2_ = upload(h_b2_);
-        d_w3_ = upload(h_w3_);  d_b3_ = upload(h_b3_);
-        d_w4_ = upload(h_w4_);  d_b4_ = upload(h_b4_);
-        d_w5_ = upload(h_w5_);  d_b5_ = upload(h_b5_);
-        d_w6_ = upload(h_w6_);  d_b6_ = upload(h_b6_);
-        d_w7_ = upload(h_w7_);  d_b7_ = upload(h_b7_);
-        d_w8_ = upload(h_w8_);  d_b8_ = upload(h_b8_);
-        d_w9_ = upload(h_w9_);  d_b9_ = upload(h_b9_);
-        d_w10_ = upload(h_w10_); d_b10_ = upload(h_b10_);
-        d_w11_ = upload(h_w11_); d_b11_ = upload(h_b11_);
-        cuda_active_ = true;
-        LOG("[CUDA] Weights uploaded  params=" << TOTAL_PARAMS << " (~" << (TOTAL_PARAMS/1e9) << "B)"
-            << "  arch=32->16384->24576->24576->24576->24576->16384->16384->8192->4096->2048->1024->4");
-    } catch (const std::exception& e) {
-        LOG("[CUDA] Upload failed — CPU fallback: " << e.what());
-        cuda_active_ = false;
+// -----------------------------------------------------------------------
+// set_device - Select GPU device
+// -----------------------------------------------------------------------
+void GPUNeuralNet::set_device(int gpu_id) {
+    device_id_ = gpu_id;
+    int device_count = 0;
+    cudaError_t err = cudaGetDeviceCount(&device_count);
+    if (err != cudaSuccess || gpu_id < 0 || gpu_id >= device_count) {
+        LOG("[GPUNeuralNet] Invalid device ID " << gpu_id << ", using device 0");
+        device_id_ = 0;
+    }
+    CUDA_CHECK(cudaSetDevice(device_id_));
+    LOG("[GPUNeuralNet] Device set to GPU " << device_id_);
+}
+
+// -----------------------------------------------------------------------
+// set_use_fp16 - Enable/disable FP16 mode
+// -----------------------------------------------------------------------
+void GPUNeuralNet::set_use_fp16(bool enable) {
+    if (use_fp16_ == enable) return;
+
+    use_fp16_ = enable;
+    LOG("[GPUNeuralNet] FP16 mode " << (enable ? "enabled" : "disabled"));
+
+    if (use_fp16_) {
+        convert_weights_to_fp16();
+    }
+
+    // Re-upload weights if already on device
+    if (cuda_active_) {
+        free_device_weights();
+        upload_weights_to_device();
     }
 }
 
 // -----------------------------------------------------------------------
-// Destructor — free device memory
+// free_device_weights - Free all device weight memory
 // -----------------------------------------------------------------------
-GPUNeuralNet::~GPUNeuralNet() {
+void GPUNeuralNet::free_device_weights() {
     auto safe_free = [](void* p) { if (p) cudaFree(p); };
     safe_free(d_w0_); safe_free(d_b0_);
     safe_free(d_w1_); safe_free(d_b1_);
@@ -159,6 +198,96 @@ GPUNeuralNet::~GPUNeuralNet() {
     safe_free(d_w9_); safe_free(d_b9_);
     safe_free(d_w10_); safe_free(d_b10_);
     safe_free(d_w11_); safe_free(d_b11_);
+    d_w0_ = d_b0_ = nullptr;
+    d_w1_ = d_b1_ = nullptr;
+    d_w2_ = d_b2_ = nullptr;
+    d_w3_ = d_b3_ = nullptr;
+    d_w4_ = d_b4_ = nullptr;
+    d_w5_ = d_b5_ = nullptr;
+    d_w6_ = d_b6_ = nullptr;
+    d_w7_ = d_b7_ = nullptr;
+    d_w8_ = d_b8_ = nullptr;
+    d_w9_ = d_b9_ = nullptr;
+    d_w10_ = d_b10_ = nullptr;
+    d_w11_ = d_b11_ = nullptr;
+}
+
+// -----------------------------------------------------------------------
+// Upload weights to device
+// -----------------------------------------------------------------------
+static float* upload(const std::vector<float>& h) {
+    float* d = nullptr;
+    CUDA_CHECK(cudaMalloc(&d, h.size() * sizeof(float)));
+    CUDA_CHECK(cudaMemcpy(d, h.data(),
+                          h.size() * sizeof(float),
+                          cudaMemcpyHostToDevice));
+    return d;
+}
+
+static void* upload_fp16(const std::vector<uint16_t>& h) {
+    void* d = nullptr;
+    CUDA_CHECK(cudaMalloc(&d, h.size() * sizeof(uint16_t)));
+    CUDA_CHECK(cudaMemcpy(d, h.data(),
+                          h.size() * sizeof(uint16_t),
+                          cudaMemcpyHostToDevice));
+    return d;
+}
+
+void GPUNeuralNet::upload_weights_to_device() {
+    try {
+        CUDA_CHECK(cudaSetDevice(device_id_));
+
+        if (use_fp16_) {
+            // Upload fp16 weights
+            if (h_w0_fp16_.empty()) {
+                convert_weights_to_fp16();
+            }
+            d_w0_ = upload_fp16(h_w0_fp16_);  d_b0_ = upload(h_b0_);
+            d_w1_ = upload_fp16(h_w1_fp16_);  d_b1_ = upload(h_b1_);
+            d_w2_ = upload_fp16(h_w2_fp16_);  d_b2_ = upload(h_b2_);
+            d_w3_ = upload_fp16(h_w3_fp16_);  d_b3_ = upload(h_b3_);
+            d_w4_ = upload_fp16(h_w4_fp16_);  d_b4_ = upload(h_b4_);
+            d_w5_ = upload_fp16(h_w5_fp16_);  d_b5_ = upload(h_b5_);
+            d_w6_ = upload_fp16(h_w6_fp16_);  d_b6_ = upload(h_b6_);
+            d_w7_ = upload_fp16(h_w7_fp16_);  d_b7_ = upload(h_b7_);
+            d_w8_ = upload_fp16(h_w8_fp16_);  d_b8_ = upload(h_b8_);
+            d_w9_ = upload_fp16(h_w9_fp16_);  d_b9_ = upload(h_b9_);
+            d_w10_ = upload_fp16(h_w10_fp16_); d_b10_ = upload(h_b10_);
+            d_w11_ = upload_fp16(h_w11_fp16_); d_b11_ = upload(h_b11_);
+            cuda_active_ = true;
+            LOG("[CUDA] FP16 weights uploaded  params=" << TOTAL_PARAMS << " (~" << (TOTAL_PARAMS/1e9) << "B)"
+                << "  device=" << device_id_
+                << "  arch=32->16384->24576->24576->24576->24576->16384->16384->8192->4096->2048->1024->4");
+        } else {
+            // Upload fp32 weights
+            d_w0_ = upload(h_w0_);  d_b0_ = upload(h_b0_);
+            d_w1_ = upload(h_w1_);  d_b1_ = upload(h_b1_);
+            d_w2_ = upload(h_w2_);  d_b2_ = upload(h_b2_);
+            d_w3_ = upload(h_w3_);  d_b3_ = upload(h_b3_);
+            d_w4_ = upload(h_w4_);  d_b4_ = upload(h_b4_);
+            d_w5_ = upload(h_w5_);  d_b5_ = upload(h_b5_);
+            d_w6_ = upload(h_w6_);  d_b6_ = upload(h_b6_);
+            d_w7_ = upload(h_w7_);  d_b7_ = upload(h_b7_);
+            d_w8_ = upload(h_w8_);  d_b8_ = upload(h_b8_);
+            d_w9_ = upload(h_w9_);  d_b9_ = upload(h_b9_);
+            d_w10_ = upload(h_w10_); d_b10_ = upload(h_b10_);
+            d_w11_ = upload(h_w11_); d_b11_ = upload(h_b11_);
+            cuda_active_ = true;
+            LOG("[CUDA] FP32 weights uploaded  params=" << TOTAL_PARAMS << " (~" << (TOTAL_PARAMS/1e9) << "B)"
+                << "  device=" << device_id_
+                << "  arch=32->16384->24576->24576->24576->24576->16384->16384->8192->4096->2048->1024->4");
+        }
+    } catch (const std::exception& e) {
+        LOG("[CUDA] Upload failed — CPU fallback: " << e.what());
+        cuda_active_ = false;
+    }
+}
+
+// -----------------------------------------------------------------------
+// Destructor — free device memory
+// -----------------------------------------------------------------------
+GPUNeuralNet::~GPUNeuralNet() {
+    free_device_weights();
 }
 
 // -----------------------------------------------------------------------

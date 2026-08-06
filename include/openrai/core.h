@@ -25,6 +25,8 @@ class KnowledgeGraph;
 class GoalSystem;
 class SelfReflection;
 class LMAdapter;
+class NodeManager;
+class Node;
 
 // Core output structure
 struct Output {
@@ -88,6 +90,9 @@ private:
     // Language model adapter (Cognition + Language hybrid)
     std::unique_ptr<LMAdapter>       lm_adapter_;
 
+    // Node-based orchestration system (Priority 5)
+    std::unique_ptr<NodeManager>     node_manager_;
+
     std::atomic<bool>        is_running_{false};
 
     // Thread-safe queue for external inputs
@@ -109,6 +114,12 @@ private:
     mutable std::mutex       stats_mutex_;
 
     void main_loop();
+
+    // Orchestration methods (Priority 5)
+    void initialize_nodes();
+    std::vector<std::string> determine_relevant_nodes(const std::string& input);
+    std::string synthesize_llm_prompt(const std::vector<std::string>& node_summaries, const std::string& original_input);
+    void process_with_orchestration(const std::string& input);
 };
 
 } // namespace openrai

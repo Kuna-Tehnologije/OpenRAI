@@ -1,0 +1,8 @@
+{
+  "model_name": "openrai-test",
+  "dtype": "fp32",
+  "layers": [
+    {"name": "w0", "in": 32, "out": 128, "dtype": "fp32", "path": "weights/w0.bin"},
+    {"name": "b0", "in": 1, "out": 128, "dtype": "fp32", "path": "weights/b0.bin"}
+  ]
+}

@@ -108,6 +108,22 @@ void GPUNeuralNet::init_weights(unsigned seed) {
 
 void GPUNeuralNet::upload_weights_to_device() {}   // no-op in CPU path
 
+void GPUNeuralNet::set_device(int gpu_id) {
+    // No-op in CPU fallback
+}
+
+void GPUNeuralNet::set_use_fp16(bool enable) {
+    // No-op in CPU fallback
+}
+
+void GPUNeuralNet::convert_weights_to_fp16() {
+    // No-op in CPU fallback
+}
+
+void GPUNeuralNet::free_device_weights() {
+    // No-op in CPU fallback
+}
+
 GPUNeuralNet::~GPUNeuralNet() {}
 
 void GPUNeuralNet::cpu_forward(const float* input, float* output) const {
