@@ -30,19 +30,17 @@ extern "C" void launch_layer(
 
 namespace openrai {
 
-// 12-layer architecture for ~4B parameters
-static constexpr int L0_IN  = 32,    L0_OUT = 16384;
-static constexpr int L1_IN  = 16384, L1_OUT = 24576;
-static constexpr int L2_IN  = 24576, L2_OUT = 24576;
-static constexpr int L3_IN  = 24576, L3_OUT = 24576;
-static constexpr int L4_IN  = 24576, L4_OUT = 24576;
-static constexpr int L5_IN  = 24576, L5_OUT = 16384;
-static constexpr int L6_IN  = 16384, L6_OUT = 16384;
-static constexpr int L7_IN  = 16384, L7_OUT = 8192;
-static constexpr int L8_IN  = 8192,  L8_OUT = 4096;
-static constexpr int L9_IN  = 4096,  L9_OUT = 2048;
-static constexpr int L10_IN = 2048,  L10_OUT = 1024;
-static constexpr int L11_IN = 1024,  L11_OUT = 4;
+// Global recursive mutex for CUDA operations across all GPUNeuralNet instances
+// Recursive to allow cleanup code during exceptions without deadlock
+static std::recursive_mutex global_cuda_mutex;
+
+// 6-layer architecture for ~5M parameters
+static constexpr int L0_IN  = 32,   L0_OUT = 512;
+static constexpr int L1_IN  = 512,  L1_OUT = 1024;
+static constexpr int L2_IN  = 1024, L2_OUT = 2048;
+static constexpr int L3_IN  = 2048, L3_OUT = 1024;
+static constexpr int L4_IN  = 1024, L4_OUT = 512;
+static constexpr int L5_IN  = 512,  L5_OUT = 4;
 
 static constexpr size_t TOTAL_PARAMS =
     static_cast<size_t>(L0_IN)*L0_OUT + L0_OUT +
@@ -50,13 +48,7 @@ static constexpr size_t TOTAL_PARAMS =
     static_cast<size_t>(L2_IN)*L2_OUT + L2_OUT +
     static_cast<size_t>(L3_IN)*L3_OUT + L3_OUT +
     static_cast<size_t>(L4_IN)*L4_OUT + L4_OUT +
-    static_cast<size_t>(L5_IN)*L5_OUT + L5_OUT +
-    static_cast<size_t>(L6_IN)*L6_OUT + L6_OUT +
-    static_cast<size_t>(L7_IN)*L7_OUT + L7_OUT +
-    static_cast<size_t>(L8_IN)*L8_OUT + L8_OUT +
-    static_cast<size_t>(L9_IN)*L9_OUT + L9_OUT +
-    static_cast<size_t>(L10_IN)*L10_OUT + L10_OUT +
-    static_cast<size_t>(L11_IN)*L11_OUT + L11_OUT;   // ~3.98B
+    static_cast<size_t>(L5_IN)*L5_OUT + L5_OUT;   // ~5.26M
 
 #define CUDA_CHECK(call)                                               \
     do {                                                               \
@@ -120,12 +112,6 @@ void GPUNeuralNet::init_weights(unsigned seed) {
     alloc_layer(h_w3_, h_b3_, L3_IN,  L3_OUT);
     alloc_layer(h_w4_, h_b4_, L4_IN,  L4_OUT);
     alloc_layer(h_w5_, h_b5_, L5_IN,  L5_OUT);
-    alloc_layer(h_w6_, h_b6_, L6_IN,  L6_OUT);
-    alloc_layer(h_w7_, h_b7_, L7_IN,  L7_OUT);
-    alloc_layer(h_w8_, h_b8_, L8_IN,  L8_OUT);
-    alloc_layer(h_w9_, h_b9_, L9_IN,  L9_OUT);
-    alloc_layer(h_w10_, h_b10_, L10_IN, L10_OUT);
-    alloc_layer(h_w11_, h_b11_, L11_IN, L11_OUT);
 }
 
 // -----------------------------------------------------------------------
@@ -138,18 +124,17 @@ void GPUNeuralNet::convert_weights_to_fp16() {
     convert_vec_to_fp16(h_w3_, h_w3_fp16_);   convert_vec_to_fp16(h_b3_, h_b3_fp16_);
     convert_vec_to_fp16(h_w4_, h_w4_fp16_);   convert_vec_to_fp16(h_b4_, h_b4_fp16_);
     convert_vec_to_fp16(h_w5_, h_w5_fp16_);   convert_vec_to_fp16(h_b5_, h_b5_fp16_);
-    convert_vec_to_fp16(h_w6_, h_w6_fp16_);   convert_vec_to_fp16(h_b6_, h_b6_fp16_);
-    convert_vec_to_fp16(h_w7_, h_w7_fp16_);   convert_vec_to_fp16(h_b7_, h_b7_fp16_);
-    convert_vec_to_fp16(h_w8_, h_w8_fp16_);   convert_vec_to_fp16(h_b8_, h_b8_fp16_);
-    convert_vec_to_fp16(h_w9_, h_w9_fp16_);   convert_vec_to_fp16(h_b9_, h_b9_fp16_);
-    convert_vec_to_fp16(h_w10_, h_w10_fp16_); convert_vec_to_fp16(h_b10_, h_b10_fp16_);
-    convert_vec_to_fp16(h_w11_, h_w11_fp16_); convert_vec_to_fp16(h_b11_, h_b11_fp16_);
 }
 
 // -----------------------------------------------------------------------
 // set_device - Select GPU device
 // -----------------------------------------------------------------------
 void GPUNeuralNet::set_device(int gpu_id) {
+    std::lock_guard<std::recursive_mutex> lock(global_cuda_mutex);
+
+    // Store old device for cleanup
+    int old_device = device_id_;
+
     device_id_ = gpu_id;
     int device_count = 0;
     cudaError_t err = cudaGetDeviceCount(&device_count);
@@ -157,7 +142,21 @@ void GPUNeuralNet::set_device(int gpu_id) {
         LOG("[GPUNeuralNet] Invalid device ID " << gpu_id << ", using device 0");
         device_id_ = 0;
     }
-    CUDA_CHECK(cudaSetDevice(device_id_));
+
+    // If weights are already on a device, we need to move them
+    if (cuda_active_ && old_device != device_id_) {
+        // Free weights from old device
+        CUDA_CHECK(cudaSetDevice(old_device));
+        free_device_weights_internal();  // Internal call, mutex already held
+        cuda_active_ = false;
+
+        // Re-upload to new device
+        CUDA_CHECK(cudaSetDevice(device_id_));
+        upload_weights_to_device_internal();  // Internal call, mutex already held
+    } else {
+        CUDA_CHECK(cudaSetDevice(device_id_));
+    }
+
     LOG("[GPUNeuralNet] Device set to GPU " << device_id_);
 }
 
@@ -166,6 +165,8 @@ void GPUNeuralNet::set_device(int gpu_id) {
 // -----------------------------------------------------------------------
 void GPUNeuralNet::set_use_fp16(bool enable) {
     if (use_fp16_ == enable) return;
+
+    std::lock_guard<std::recursive_mutex> lock(global_cuda_mutex);
 
     use_fp16_ = enable;
     LOG("[GPUNeuralNet] FP16 mode " << (enable ? "enabled" : "disabled"));
@@ -176,15 +177,20 @@ void GPUNeuralNet::set_use_fp16(bool enable) {
 
     // Re-upload weights if already on device
     if (cuda_active_) {
-        free_device_weights();
-        upload_weights_to_device();
+        free_device_weights_internal();  // Internal call, mutex already held
+        upload_weights_to_device_internal();  // Internal call, mutex already held
     }
 }
 
 // -----------------------------------------------------------------------
-// free_device_weights - Free all device weight memory
+// free_device_weights_internal - Free all device weight memory (NO LOCK)
 // -----------------------------------------------------------------------
-void GPUNeuralNet::free_device_weights() {
+void GPUNeuralNet::free_device_weights_internal() {
+    // Make sure we're on the correct device before freeing
+    if (cuda_active_) {
+        cudaSetDevice(device_id_);
+    }
+
     auto safe_free = [](void* p) { if (p) cudaFree(p); };
     safe_free(d_w0_); safe_free(d_b0_);
     safe_free(d_w1_); safe_free(d_b1_);
@@ -192,24 +198,20 @@ void GPUNeuralNet::free_device_weights() {
     safe_free(d_w3_); safe_free(d_b3_);
     safe_free(d_w4_); safe_free(d_b4_);
     safe_free(d_w5_); safe_free(d_b5_);
-    safe_free(d_w6_); safe_free(d_b6_);
-    safe_free(d_w7_); safe_free(d_b7_);
-    safe_free(d_w8_); safe_free(d_b8_);
-    safe_free(d_w9_); safe_free(d_b9_);
-    safe_free(d_w10_); safe_free(d_b10_);
-    safe_free(d_w11_); safe_free(d_b11_);
     d_w0_ = d_b0_ = nullptr;
     d_w1_ = d_b1_ = nullptr;
     d_w2_ = d_b2_ = nullptr;
     d_w3_ = d_b3_ = nullptr;
     d_w4_ = d_b4_ = nullptr;
     d_w5_ = d_b5_ = nullptr;
-    d_w6_ = d_b6_ = nullptr;
-    d_w7_ = d_b7_ = nullptr;
-    d_w8_ = d_b8_ = nullptr;
-    d_w9_ = d_b9_ = nullptr;
-    d_w10_ = d_b10_ = nullptr;
-    d_w11_ = d_b11_ = nullptr;
+}
+
+// -----------------------------------------------------------------------
+// free_device_weights - Free all device weight memory (PUBLIC)
+// -----------------------------------------------------------------------
+void GPUNeuralNet::free_device_weights() {
+    std::lock_guard<std::recursive_mutex> lock(global_cuda_mutex);
+    free_device_weights_internal();
 }
 
 // -----------------------------------------------------------------------
@@ -233,54 +235,55 @@ static void* upload_fp16(const std::vector<uint16_t>& h) {
     return d;
 }
 
-void GPUNeuralNet::upload_weights_to_device() {
+void GPUNeuralNet::upload_weights_to_device_internal() {
+    LOG("[GPUNeuralNet] upload_weights_to_device_internal called - device_id=" << device_id_ << " use_fp16=" << use_fp16_);
+
     try {
         CUDA_CHECK(cudaSetDevice(device_id_));
 
         if (use_fp16_) {
             // Upload fp16 weights
             if (h_w0_fp16_.empty()) {
+                LOG("[GPUNeuralNet] Converting weights to FP16...");
                 convert_weights_to_fp16();
             }
+            LOG("[GPUNeuralNet] Uploading FP16 weights...");
             d_w0_ = upload_fp16(h_w0_fp16_);  d_b0_ = upload(h_b0_);
             d_w1_ = upload_fp16(h_w1_fp16_);  d_b1_ = upload(h_b1_);
             d_w2_ = upload_fp16(h_w2_fp16_);  d_b2_ = upload(h_b2_);
             d_w3_ = upload_fp16(h_w3_fp16_);  d_b3_ = upload(h_b3_);
             d_w4_ = upload_fp16(h_w4_fp16_);  d_b4_ = upload(h_b4_);
             d_w5_ = upload_fp16(h_w5_fp16_);  d_b5_ = upload(h_b5_);
-            d_w6_ = upload_fp16(h_w6_fp16_);  d_b6_ = upload(h_b6_);
-            d_w7_ = upload_fp16(h_w7_fp16_);  d_b7_ = upload(h_b7_);
-            d_w8_ = upload_fp16(h_w8_fp16_);  d_b8_ = upload(h_b8_);
-            d_w9_ = upload_fp16(h_w9_fp16_);  d_b9_ = upload(h_b9_);
-            d_w10_ = upload_fp16(h_w10_fp16_); d_b10_ = upload(h_b10_);
-            d_w11_ = upload_fp16(h_w11_fp16_); d_b11_ = upload(h_b11_);
             cuda_active_ = true;
-            LOG("[CUDA] FP16 weights uploaded  params=" << TOTAL_PARAMS << " (~" << (TOTAL_PARAMS/1e9) << "B)"
+            LOG("[CUDA] FP16 weights uploaded  params=" << TOTAL_PARAMS << " (~" << (TOTAL_PARAMS/1e6) << "M)"
                 << "  device=" << device_id_
-                << "  arch=32->16384->24576->24576->24576->24576->16384->16384->8192->4096->2048->1024->4");
+                << "  arch=32->512->1024->2048->1024->512->4");
         } else {
             // Upload fp32 weights
+            LOG("[GPUNeuralNet] Uploading FP32 weights...");
             d_w0_ = upload(h_w0_);  d_b0_ = upload(h_b0_);
             d_w1_ = upload(h_w1_);  d_b1_ = upload(h_b1_);
             d_w2_ = upload(h_w2_);  d_b2_ = upload(h_b2_);
             d_w3_ = upload(h_w3_);  d_b3_ = upload(h_b3_);
             d_w4_ = upload(h_w4_);  d_b4_ = upload(h_b4_);
             d_w5_ = upload(h_w5_);  d_b5_ = upload(h_b5_);
-            d_w6_ = upload(h_w6_);  d_b6_ = upload(h_b6_);
-            d_w7_ = upload(h_w7_);  d_b7_ = upload(h_b7_);
-            d_w8_ = upload(h_w8_);  d_b8_ = upload(h_b8_);
-            d_w9_ = upload(h_w9_);  d_b9_ = upload(h_b9_);
-            d_w10_ = upload(h_w10_); d_b10_ = upload(h_b10_);
-            d_w11_ = upload(h_w11_); d_b11_ = upload(h_b11_);
             cuda_active_ = true;
-            LOG("[CUDA] FP32 weights uploaded  params=" << TOTAL_PARAMS << " (~" << (TOTAL_PARAMS/1e9) << "B)"
+            LOG("[CUDA] FP32 weights uploaded  params=" << TOTAL_PARAMS << " (~" << (TOTAL_PARAMS/1e6) << "M)"
                 << "  device=" << device_id_
-                << "  arch=32->16384->24576->24576->24576->24576->16384->16384->8192->4096->2048->1024->4");
+                << "  arch=32->512->1024->2048->1024->512->4");
         }
     } catch (const std::exception& e) {
         LOG("[CUDA] Upload failed — CPU fallback: " << e.what());
         cuda_active_ = false;
     }
+}
+
+// -----------------------------------------------------------------------
+// upload_weights_to_device - Public wrapper with lock
+// -----------------------------------------------------------------------
+void GPUNeuralNet::upload_weights_to_device() {
+    std::lock_guard<std::recursive_mutex> lock(global_cuda_mutex);
+    upload_weights_to_device_internal();
 }
 
 // -----------------------------------------------------------------------
@@ -295,8 +298,10 @@ GPUNeuralNet::~GPUNeuralNet() {
 // -----------------------------------------------------------------------
 void GPUNeuralNet::run_batch(const float*           inputs,
                               size_t                 N,
-                              std::vector<NNResult>& results) const
-{
+                                                             std::vector<NNResult>& results) const
+                              {
+                                  std::lock_guard<std::recursive_mutex> lock(global_cuda_mutex);  // Global lock for all CUDA ops
+
     results.resize(N);
 
     if (!cuda_active_) {
@@ -309,20 +314,33 @@ void GPUNeuralNet::run_batch(const float*           inputs,
         return;
     }
 
-    // Allocate device buffers for this batch (12 layers)
+    // Check if weights are uploaded
+    if (!d_w0_ || !d_b0_ || !d_w1_ || !d_b1_ || !d_w2_ || !d_b2_ ||
+        !d_w3_ || !d_b3_ || !d_w4_ || !d_b4_ || !d_w5_ || !d_b5_) {
+        LOG("[GPUNeuralNet] ERROR: Device weights not uploaded! Using CPU fallback.");
+        LOG("[GPUNeuralNet] d_w0_=" << d_w0_ << " d_w1_=" << d_w1_ << " d_w2_=" << d_w2_
+            << " d_w3_=" << d_w3_ << " d_w4_=" << d_w4_ << " d_w5_=" << d_w5_);
+
+        // Fallback to CPU
+        std::vector<float> out(OUTPUT_DIM);
+        for (size_t i = 0; i < N; ++i) {
+            cpu_forward(inputs + i * INPUT_DIM, out.data());
+            results[i] = { out[0], out[1], out[2] > 0.5f, out[3] };
+        }
+        return;
+    }
+
+    // Set the correct device before running inference
+    CUDA_CHECK(cudaSetDevice(device_id_));
+
+    // Allocate device buffers for this batch (6 layers)
     float* d_in   = nullptr;
-    float* d_a0   = nullptr;  // after layer 0  [N x 16384]
-    float* d_a1   = nullptr;  // after layer 1  [N x 24576]
-    float* d_a2   = nullptr;  // after layer 2  [N x 24576]
-    float* d_a3   = nullptr;  // after layer 3  [N x 24576]
-    float* d_a4   = nullptr;  // after layer 4  [N x 24576]
-    float* d_a5   = nullptr;  // after layer 5  [N x 16384]
-    float* d_a6   = nullptr;  // after layer 6  [N x 16384]
-    float* d_a7   = nullptr;  // after layer 7  [N x 8192]
-    float* d_a8   = nullptr;  // after layer 8  [N x 4096]
-    float* d_a9   = nullptr;  // after layer 9  [N x 2048]
-    float* d_a10  = nullptr;  // after layer 10 [N x 1024]
-    float* d_out  = nullptr;  // after layer 11 [N x 4]
+    float* d_a0   = nullptr;  // after layer 0  [N x 512]
+    float* d_a1   = nullptr;  // after layer 1  [N x 1024]
+    float* d_a2   = nullptr;  // after layer 2  [N x 2048]
+    float* d_a3   = nullptr;  // after layer 3  [N x 1024]
+    float* d_a4   = nullptr;  // after layer 4  [N x 512]
+    float* d_out  = nullptr;  // after layer 5  [N x 4]
 
     size_t Ni = static_cast<int>(N);
 
@@ -332,52 +350,39 @@ void GPUNeuralNet::run_batch(const float*           inputs,
     CUDA_CHECK(cudaMalloc(&d_a2,  Ni * L2_OUT * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_a3,  Ni * L3_OUT * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_a4,  Ni * L4_OUT * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_a5,  Ni * L5_OUT * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_a6,  Ni * L6_OUT * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_a7,  Ni * L7_OUT * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_a8,  Ni * L8_OUT * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_a9,  Ni * L9_OUT * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_a10, Ni * L10_OUT * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_out, Ni * L11_OUT * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_out, Ni * L5_OUT * sizeof(float)));
 
     // Upload batch inputs
     CUDA_CHECK(cudaMemcpy(d_in, inputs,
                           Ni * L0_IN * sizeof(float),
                           cudaMemcpyHostToDevice));
 
-    // Forward pass — layer by layer (12 layers)
+    // Forward pass — layer by layer (6 layers)
     launch_layer(d_in,  (float*)d_w0_,  d_b0_,  d_a0,  Ni, L0_IN,  L0_OUT,  0); // LeakyReLU
     launch_layer(d_a0,  (float*)d_w1_,  d_b1_,  d_a1,  Ni, L1_IN,  L1_OUT,  0);
     launch_layer(d_a1,  (float*)d_w2_,  d_b2_,  d_a2,  Ni, L2_IN,  L2_OUT,  0);
     launch_layer(d_a2,  (float*)d_w3_,  d_b3_,  d_a3,  Ni, L3_IN,  L3_OUT,  0);
     launch_layer(d_a3,  (float*)d_w4_,  d_b4_,  d_a4,  Ni, L4_IN,  L4_OUT,  0);
-    launch_layer(d_a4,  (float*)d_w5_,  d_b5_,  d_a5,  Ni, L5_IN,  L5_OUT,  0);
-    launch_layer(d_a5,  (float*)d_w6_,  d_b6_,  d_a6,  Ni, L6_IN,  L6_OUT,  0);
-    launch_layer(d_a6,  (float*)d_w7_,  d_b7_,  d_a7,  Ni, L7_IN,  L7_OUT,  0);
-    launch_layer(d_a7,  (float*)d_w8_,  d_b8_,  d_a8,  Ni, L8_IN,  L8_OUT,  0);
-    launch_layer(d_a8,  (float*)d_w9_,  d_b9_,  d_a9,  Ni, L9_IN,  L9_OUT,  0);
-    launch_layer(d_a9,  (float*)d_w10_, d_b10_, d_a10, Ni, L10_IN, L10_OUT, 0);
-    launch_layer(d_a10, (float*)d_w11_, d_b11_, d_out, Ni, L11_IN, L11_OUT, 1); // Sigmoid
+    launch_layer(d_a4,  (float*)d_w5_,  d_b5_,  d_out, Ni, L5_IN,  L5_OUT,  1); // Sigmoid
 
     CUDA_CHECK(cudaDeviceSynchronize());
 
     // Download results
-    std::vector<float> h_out(Ni * L11_OUT);
+    std::vector<float> h_out(Ni * L5_OUT);
     CUDA_CHECK(cudaMemcpy(h_out.data(), d_out,
-                          Ni * L11_OUT * sizeof(float),
+                          Ni * L5_OUT * sizeof(float),
                           cudaMemcpyDeviceToHost));
 
     // Unpack
     for (size_t i = 0; i < N; ++i) {
-        const float* r = h_out.data() + i * L11_OUT;
+        const float* r = h_out.data() + i * L5_OUT;
         results[i] = { r[0], r[1], r[2] > 0.5f, r[3] };
     }
 
     // Free batch buffers
     cudaFree(d_in);
     cudaFree(d_a0); cudaFree(d_a1); cudaFree(d_a2); cudaFree(d_a3);
-    cudaFree(d_a4); cudaFree(d_a5); cudaFree(d_a6); cudaFree(d_a7);
-    cudaFree(d_a8); cudaFree(d_a9); cudaFree(d_a10);
+    cudaFree(d_a4);
     cudaFree(d_out);
 }
 
@@ -407,22 +412,14 @@ static void layer_cpu(const float* in,  size_t in_dim,
 }
 
 void GPUNeuralNet::cpu_forward(const float* input, float* output) const {
-    std::vector<float> a0(L0_OUT), a1(L1_OUT), a2(L2_OUT), a3(L3_OUT),
-                       a4(L4_OUT), a5(L5_OUT), a6(L6_OUT), a7(L7_OUT),
-                       a8(L8_OUT), a9(L9_OUT), a10(L10_OUT);
+    std::vector<float> a0(L0_OUT), a1(L1_OUT), a2(L2_OUT), a3(L3_OUT), a4(L4_OUT);
 
     layer_cpu(input,     L0_IN,  h_w0_.data(),  h_b0_.data(),  a0.data(),  L0_OUT,  false);
     layer_cpu(a0.data(), L1_IN,  h_w1_.data(),  h_b1_.data(),  a1.data(),  L1_OUT,  false);
     layer_cpu(a1.data(), L2_IN,  h_w2_.data(),  h_b2_.data(),  a2.data(),  L2_OUT,  false);
     layer_cpu(a2.data(), L3_IN,  h_w3_.data(),  h_b3_.data(),  a3.data(),  L3_OUT,  false);
     layer_cpu(a3.data(), L4_IN,  h_w4_.data(),  h_b4_.data(),  a4.data(),  L4_OUT,  false);
-    layer_cpu(a4.data(), L5_IN,  h_w5_.data(),  h_b5_.data(),  a5.data(),  L5_OUT,  false);
-    layer_cpu(a5.data(), L6_IN,  h_w6_.data(),  h_b6_.data(),  a6.data(),  L6_OUT,  false);
-    layer_cpu(a6.data(), L7_IN,  h_w7_.data(),  h_b7_.data(),  a7.data(),  L7_OUT,  false);
-    layer_cpu(a7.data(), L8_IN,  h_w8_.data(),  h_b8_.data(),  a8.data(),  L8_OUT,  false);
-    layer_cpu(a8.data(), L9_IN,  h_w9_.data(),  h_b9_.data(),  a9.data(),  L9_OUT,  false);
-    layer_cpu(a9.data(), L10_IN, h_w10_.data(), h_b10_.data(), a10.data(), L10_OUT, false);
-    layer_cpu(a10.data(),L11_IN, h_w11_.data(), h_b11_.data(), output,     L11_OUT, true);
+    layer_cpu(a4.data(), L5_IN,  h_w5_.data(),  h_b5_.data(),  output,     L5_OUT,  true);
 }
 
 // -----------------------------------------------------------------------
@@ -430,8 +427,8 @@ void GPUNeuralNet::cpu_forward(const float* input, float* output) const {
 // -----------------------------------------------------------------------
 void GPUNeuralNet::print_summary() const {
     LOG("[GPUNeuralNet] " << (cuda_active_ ? "CUDA ACTIVE" : "CPU FALLBACK")
-        << "  arch=32->16384->24576->24576->24576->24576->16384->16384->8192->4096->2048->1024->4"
-        << "  params=" << TOTAL_PARAMS << " (~" << (TOTAL_PARAMS / 1e9) << "B)"
+        << "  arch=32->512->1024->2048->1024->512->4"
+        << "  params=" << TOTAL_PARAMS << " (~" << (TOTAL_PARAMS / 1e6) << "M)"
         << "  activations=LeakyReLU/Sigmoid");
 }
 

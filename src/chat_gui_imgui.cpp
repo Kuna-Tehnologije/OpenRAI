@@ -166,6 +166,51 @@ void ChatGUI::shutdown() {
     running_ = false;
 }
 
+void ChatGUI::add_message(const std::string& text, bool is_user) {
+    std::lock_guard<std::mutex> lock(chat_mutex_);
+
+    ChatMessage msg;
+    msg.text = text;
+    msg.is_user = is_user;
+    msg.timestamp = static_cast<float>(chat_history_.size());
+
+    chat_history_.push_back(msg);
+    total_messages_++;
+    scroll_to_bottom_ = true;
+}
+
+void ChatGUI::send_message() {
+    std::string input(input_buffer_);
+    if (input.empty()) return;
+
+    // Clear input buffer
+    memset(input_buffer_, 0, sizeof(input_buffer_));
+
+    // Add user message
+    add_message(input, true);
+
+    // Inject to OpenRAI engine
+    if (rai_engine_) {
+        rai_engine_->inject_input(input);
+    }
+}
+
+void ChatGUI::render_chat_window() {
+    // Implemented inline in render_frame()
+}
+
+void ChatGUI::render_input_area() {
+    // Implemented inline in render_frame()
+}
+
+void ChatGUI::render_stats_panel() {
+    // Implemented inline in render_frame()
+}
+
+void ChatGUI::render_memory_panel() {
+    // Future implementation
+}
+
 // Helper functions for D3D11
 bool CreateDeviceD3D(HWND hWnd) {
     DXGI_SWAP_CHAIN_DESC sd;

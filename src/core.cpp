@@ -21,11 +21,11 @@
 
 namespace openrai {
 
-static constexpr int NODE_COUNT = 100;
-static constexpr int TOP_K = 10;
-static constexpr int TOP_OUTPUT = 4;
-static constexpr int REASONING_NODE_COUNT = 20;
-static constexpr int LOOP_WAIT_MS = 33;
+static constexpr int NODE_COUNT = 10;
+static constexpr int TOP_K = 5;
+static constexpr int TOP_OUTPUT = 3;
+static constexpr int REASONING_NODE_COUNT = 6;
+static constexpr int LOOP_WAIT_MS = 200;
 static constexpr const char* VECTOR_MEMORY_PATH = "data/vector_memory.db";
 static constexpr const char* VECTOR_DB_PATH = "data/vector_database.db";
 static constexpr const char* STEP_INPUT_POOL_PATH = "data/openrai_math_1M.csv";

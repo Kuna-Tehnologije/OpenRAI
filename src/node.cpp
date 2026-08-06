@@ -12,6 +12,7 @@
 #include <thread>
 #include <future>
 #include <chrono>
+#include <filesystem>
 
 namespace openrai {
 
@@ -61,6 +62,13 @@ void Node::initialize_neural_net() {
 }
 
 void Node::initialize_vector_db() {
+    // Create directory if it doesn't exist
+    std::filesystem::path dir_path = "data/nodes";
+    if (!std::filesystem::exists(dir_path)) {
+        std::filesystem::create_directories(dir_path);
+        LOG("[Node] Created directory: " << dir_path);
+    }
+
     std::string db_path = "data/nodes/" + name_ + ".db";
     vector_db_ = std::make_unique<VectorDatabase>();
     if (!vector_db_->initialize(db_path)) {
@@ -250,7 +258,21 @@ std::vector<NodeOutput> NodeManager::process_parallel(
     // Launch parallel processing
     for (const auto& name : node_names) {
         futures.push_back(std::async(std::launch::async, [this, name, input]() {
-            return process_on_node(name, input);
+            try {
+                return process_on_node(name, input);
+            } catch (const std::exception& e) {
+                LOG("[NodeManager] Exception in node " << name << ": " << e.what());
+                NodeOutput error;
+                error.summary = "[ERROR] Exception: " + std::string(e.what());
+                error.confidence = 0.0f;
+                return error;
+            } catch (...) {
+                LOG("[NodeManager] Unknown exception in node " << name);
+                NodeOutput error;
+                error.summary = "[ERROR] Unknown exception";
+                error.confidence = 0.0f;
+                return error;
+            }
         }));
     }
 
@@ -258,7 +280,15 @@ std::vector<NodeOutput> NodeManager::process_parallel(
     std::vector<NodeOutput> results;
     results.reserve(futures.size());
     for (auto& fut : futures) {
-        results.push_back(fut.get());
+        try {
+            results.push_back(fut.get());
+        } catch (const std::exception& e) {
+            LOG("[NodeManager] Exception collecting result: " << e.what());
+            NodeOutput error;
+            error.summary = "[ERROR] " + std::string(e.what());
+            error.confidence = 0.0f;
+            results.push_back(error);
+        }
     }
 
     return results;

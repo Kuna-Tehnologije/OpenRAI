@@ -9,6 +9,7 @@
 #include <string>
 #include <thread>
 #include <mutex>
+#include <fstream>
 
 #pragma comment(lib, "comctl32.lib")
 
@@ -218,6 +219,9 @@ bool ChatGUI::initialize(int width, int height) {
     g_pRAI = rai_engine_;
     g_bRunning = true;
 
+    // Unregister class if it exists (from previous run)
+    UnregisterClassA("OpenRAIChatClass", GetModuleHandle(nullptr));
+
     // Register window class
     WNDCLASSEXA wc = {};
     wc.cbSize = sizeof(WNDCLASSEXA);
@@ -229,7 +233,14 @@ bool ChatGUI::initialize(int width, int height) {
     wc.lpszClassName = "OpenRAIChatClass";
 
     if (!RegisterClassExA(&wc)) {
-        MessageBoxA(nullptr, "Failed to register window class", "Error", MB_OK | MB_ICONERROR);
+        DWORD error = GetLastError();
+        char msg[256];
+        sprintf_s(msg, "Failed to register window class. Error code: %lu", error);
+        MessageBoxA(nullptr, msg, "Error", MB_OK | MB_ICONERROR);
+
+        std::ofstream log("chat_gui_debug.log", std::ios::app);
+        log << "ERROR: Failed to register window class, error=" << error << "\n";
+        log.flush();
         return false;
     }
 
@@ -244,11 +255,31 @@ bool ChatGUI::initialize(int width, int height) {
     );
 
     if (!g_hWnd) {
-        MessageBoxA(nullptr, "Failed to create window", "Error", MB_OK | MB_ICONERROR);
+        DWORD error = GetLastError();
+        char msg[256];
+        sprintf_s(msg, "Failed to create window. Error code: %lu", error);
+        MessageBoxA(nullptr, msg, "Error", MB_OK | MB_ICONERROR);
+
+        std::ofstream log("chat_gui_debug.log", std::ios::app);
+        log << "ERROR: Failed to create window, error=" << error << "\n";
+        log.flush();
         return false;
     }
 
+    // Log window created
+    {
+        std::ofstream log("chat_gui_debug.log", std::ios::app);
+        log << "Window created successfully: hwnd=" << g_hWnd << "\n";
+        log.flush();
+    }
+
     // Create chat history (multiline edit control)
+    {
+        std::ofstream log("chat_gui_debug.log", std::ios::app);
+        log << "Creating chat history control...\n";
+        log.flush();
+    }
+
     g_hChatHistory = CreateWindowExA(
         WS_EX_CLIENTEDGE,
         "EDIT",
@@ -258,13 +289,33 @@ bool ChatGUI::initialize(int width, int height) {
         g_hWnd, (HMENU)1000, GetModuleHandle(nullptr), nullptr
     );
 
+    if (!g_hChatHistory) {
+        std::ofstream log("chat_gui_debug.log", std::ios::app);
+        log << "ERROR: Failed to create chat history control\n";
+        log.flush();
+        MessageBoxA(nullptr, "Failed to create chat history control", "Error", MB_OK);
+        return false;
+    }
+
     // Set font
+    {
+        std::ofstream log("chat_gui_debug.log", std::ios::app);
+        log << "Creating font...\n";
+        log.flush();
+    }
+
     HFONT hFont = CreateFontA(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                             DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Consolas");
     SendMessage(g_hChatHistory, WM_SETFONT, (WPARAM)hFont, TRUE);
 
     // Create input box
+    {
+        std::ofstream log("chat_gui_debug.log", std::ios::app);
+        log << "Creating input box...\n";
+        log.flush();
+    }
+
     g_hInputBox = CreateWindowExA(
         WS_EX_CLIENTEDGE,
         "EDIT",
@@ -276,6 +327,12 @@ bool ChatGUI::initialize(int width, int height) {
     SendMessage(g_hInputBox, WM_SETFONT, (WPARAM)hFont, TRUE);
 
     // Create send button
+    {
+        std::ofstream log("chat_gui_debug.log", std::ios::app);
+        log << "Creating send button...\n";
+        log.flush();
+    }
+
     g_hSendButton = CreateWindowA(
         "BUTTON",
         "Send",
@@ -286,6 +343,12 @@ bool ChatGUI::initialize(int width, int height) {
     SendMessage(g_hSendButton, WM_SETFONT, (WPARAM)hFont, TRUE);
 
     // Create stats label
+    {
+        std::ofstream log("chat_gui_debug.log", std::ios::app);
+        log << "Creating stats label...\n";
+        log.flush();
+    }
+
     g_hStatsLabel = CreateWindowA(
         "STATIC",
         "Messages: 0",
@@ -304,16 +367,32 @@ bool ChatGUI::initialize(int width, int height) {
     ShowWindow(g_hWnd, SW_SHOW);
     UpdateWindow(g_hWnd);
 
+    // Log success
+    std::ofstream log("chat_gui_debug.log", std::ios::app);
+    log << "Win32 GUI initialized successfully, window shown\n";
+    log << "g_bRunning = " << g_bRunning << "\n";
+    log.flush();
+
+    running_ = true;
     return true;
 }
 
 bool ChatGUI::render_frame() {
-    if (!g_bRunning) return false;
+    if (!g_bRunning) {
+        // Write to debug log
+        std::ofstream log("chat_gui_debug.log", std::ios::app);
+        log << "render_frame: g_bRunning = false, exiting\n";
+        log.flush();
+        return false;
+    }
 
     MSG msg;
     while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
         if (msg.message == WM_QUIT) {
             g_bRunning = false;
+            std::ofstream log("chat_gui_debug.log", std::ios::app);
+            log << "render_frame: WM_QUIT received, exiting\n";
+            log.flush();
             return false;
         }
 

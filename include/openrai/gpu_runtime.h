@@ -12,6 +12,7 @@
 #include <vector>
 #include <string>
 #include <cstddef>
+#include <mutex>
 
 namespace openrai {
 
@@ -27,23 +28,17 @@ struct NNResult {
 // GPUNeuralNet
 //   Manages a weight matrix on the device and runs batched inference.
 //
-//   Architecture (ULTRA-DEEP & WIDE - 3D AI Infrastructure):
-//     12 layers total
+//   Architecture (OPTIMIZED 5M PARAMS):
+//     6 layers total
 //     input  32
-//     hidden 16384  LeakyReLU
-//     hidden 24576  LeakyReLU
-//     hidden 24576  LeakyReLU
-//     hidden 24576  LeakyReLU
-//     hidden 24576  LeakyReLU
-//     hidden 16384  LeakyReLU
-//     hidden 16384  LeakyReLU
-//     hidden 8192   LeakyReLU
-//     hidden 4096   LeakyReLU
+//     hidden 512    LeakyReLU
+//     hidden 1024   LeakyReLU
 //     hidden 2048   LeakyReLU
 //     hidden 1024   LeakyReLU
+//     hidden 512    LeakyReLU
 //     output    4   Sigmoid
 //
-//   Total params: ~3.98B  (4 billion scale)
+//   Total params: ~5.26M  (efficient mid-scale)
 //
 //   Batch inference:
 //     run_batch(inputs, N) — runs N inputs concurrently on the GPU.
@@ -84,18 +79,12 @@ private:
     int   device_id_ = 0;
 
     // ---- Device pointers (null when CUDA disabled) ----
-    void* d_w0_ = nullptr;   float* d_b0_ = nullptr;   // 32->16384
-    void* d_w1_ = nullptr;   float* d_b1_ = nullptr;   // 16384->24576
-    void* d_w2_ = nullptr;   float* d_b2_ = nullptr;   // 24576->24576
-    void* d_w3_ = nullptr;   float* d_b3_ = nullptr;   // 24576->24576
-    void* d_w4_ = nullptr;   float* d_b4_ = nullptr;   // 24576->24576
-    void* d_w5_ = nullptr;   float* d_b5_ = nullptr;   // 24576->16384
-    void* d_w6_ = nullptr;   float* d_b6_ = nullptr;   // 16384->16384
-    void* d_w7_ = nullptr;   float* d_b7_ = nullptr;   // 16384->8192
-    void* d_w8_ = nullptr;   float* d_b8_ = nullptr;   // 8192->4096
-    void* d_w9_ = nullptr;   float* d_b9_ = nullptr;   // 4096->2048
-    void* d_w10_ = nullptr;  float* d_b10_ = nullptr;  // 2048->1024
-    void* d_w11_ = nullptr;  float* d_b11_ = nullptr;  // 1024->4
+    void* d_w0_ = nullptr;   float* d_b0_ = nullptr;   // 32->512
+    void* d_w1_ = nullptr;   float* d_b1_ = nullptr;   // 512->1024
+    void* d_w2_ = nullptr;   float* d_b2_ = nullptr;   // 1024->2048
+    void* d_w3_ = nullptr;   float* d_b3_ = nullptr;   // 2048->1024
+    void* d_w4_ = nullptr;   float* d_b4_ = nullptr;   // 1024->512
+    void* d_w5_ = nullptr;   float* d_b5_ = nullptr;   // 512->4
 
     // ---- Host-side weight copies (CPU fallback) ----
     std::vector<float> h_w0_, h_b0_;
@@ -104,12 +93,6 @@ private:
     std::vector<float> h_w3_, h_b3_;
     std::vector<float> h_w4_, h_b4_;
     std::vector<float> h_w5_, h_b5_;
-    std::vector<float> h_w6_, h_b6_;
-    std::vector<float> h_w7_, h_b7_;
-    std::vector<float> h_w8_, h_b8_;
-    std::vector<float> h_w9_, h_b9_;
-    std::vector<float> h_w10_, h_b10_;
-    std::vector<float> h_w11_, h_b11_;
 
     // ---- Host-side fp16 weight copies (for fp16 mode) ----
     std::vector<uint16_t> h_w0_fp16_, h_b0_fp16_;
@@ -118,18 +101,14 @@ private:
     std::vector<uint16_t> h_w3_fp16_, h_b3_fp16_;
     std::vector<uint16_t> h_w4_fp16_, h_b4_fp16_;
     std::vector<uint16_t> h_w5_fp16_, h_b5_fp16_;
-    std::vector<uint16_t> h_w6_fp16_, h_b6_fp16_;
-    std::vector<uint16_t> h_w7_fp16_, h_b7_fp16_;
-    std::vector<uint16_t> h_w8_fp16_, h_b8_fp16_;
-    std::vector<uint16_t> h_w9_fp16_, h_b9_fp16_;
-    std::vector<uint16_t> h_w10_fp16_, h_b10_fp16_;
-    std::vector<uint16_t> h_w11_fp16_, h_b11_fp16_;
 
     void init_weights(unsigned seed);
     void upload_weights_to_device();
+    void upload_weights_to_device_internal();  // Internal version without lock
     void cpu_forward(const float* input, float* output) const;
     void convert_weights_to_fp16();
     void free_device_weights();
+    void free_device_weights_internal();  // Internal version without lock
 };
 
 // -----------------------------------------------------------------------

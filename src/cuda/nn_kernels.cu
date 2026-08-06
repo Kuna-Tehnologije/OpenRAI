@@ -2,17 +2,17 @@
 // nn_kernels.cu
 //   CUDA kernels for batched neural-network forward pass.
 //
-//   Architecture per sample:
-//     32 -> 256 (LeakyReLU)
-//    256 -> 512 (LeakyReLU)
-//    512 -> 256 (LeakyReLU)
-//    256 -> 128 (LeakyReLU)
-//    128 ->   4 (Sigmoid)
+//   Architecture per sample (6 layers, ~5.26M params):
+//     32 -> 512 (LeakyReLU)
+//    512 -> 1024 (LeakyReLU)
+//   1024 -> 2048 (LeakyReLU)
+//   2048 -> 1024 (LeakyReLU)
+//   1024 -> 512 (LeakyReLU)
+//    512 -> 4 (Sigmoid)
 //
 //   Batch strategy:
-//     Each CUDA block handles one sample.
-//     Threads within the block parallelise the neuron computations
-//     of each layer using shared memory for activation vectors.
+//     1D grid launch: total threads = batch * out_dim
+//     Each thread computes one output neuron for one sample.
 //
 //   Memory layout (row-major, all float32):
 //     W[l] : [out_l x in_l]   device pointer
@@ -34,11 +34,7 @@ __device__ __forceinline__ float sigmoid(float x) {
 
 // -----------------------------------------------------------------------
 // generic_layer_kernel
-//   One block per sample, threads per output neuron.
-//   Uses shared memory for the activation buffer.
-//
-//   grid  : (batch_size, 1, 1)
-//   block : (MAX_NEURONS, 1, 1)   — launched with OUT_DIM active threads
+//   1D grid launch where each thread handles one output neuron of one sample.
 //
 //   activations_in  : device ptr, [batch_size x in_dim]
 //   W               : [out_dim x in_dim]
@@ -52,13 +48,17 @@ __global__ void generic_layer_kernel(
         const float* __restrict__ W,
         const float* __restrict__ b,
         float*       __restrict__ activations_out,
+        int batch_size,
         int in_dim, int out_dim,
         int use_sigmoid)
 {
-    const int sample = blockIdx.x;
-    const int neuron = threadIdx.x;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = batch_size * out_dim;
 
-    if (neuron >= out_dim) return;
+    if (idx >= total) return;
+
+    int sample = idx / out_dim;
+    int neuron = idx % out_dim;
 
     const float* x = activations_in + sample * in_dim;
     float*       y = activations_out + sample * out_dim;
@@ -87,13 +87,14 @@ void launch_layer(
         int batch, int in_dim, int out_dim,
         int use_sigmoid)
 {
-    // One block per sample; threads = out_dim (padded to warp size)
-    dim3 grid(batch);
-    dim3 block(out_dim);   // max 1024; our largest layer is 512 — OK
+    // 1D grid launch: total threads = batch * out_dim
+    int total = batch * out_dim;
+    int threads = 256;
+    int blocks = (total + threads - 1) / threads;
 
-    generic_layer_kernel<<<grid, block>>>(
+    generic_layer_kernel<<<blocks, threads>>>(
         d_in, d_W, d_b, d_out,
-        in_dim, out_dim, use_sigmoid);
+        batch, in_dim, out_dim, use_sigmoid);
 }
 
 } // extern "C"
