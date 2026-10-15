@@ -1,8 +1,14 @@
 // -----------------------------------------------------------------------
 // gpu_runtime_cpu.cpp
-//   CPU-only implementation of GPUNeuralNet.
+//   CPU-only implementation of GPUNeuralNet + GPUStreamContext.
 //   Compiled when OPENRAI_CUDA_ENABLED is NOT defined.
-//   The CUDA version (gpu_runtime.cu) provides the same interface.
+//   The CUDA version (src/cuda/gpu_runtime.cu) provides the same interface.
+//
+//   "Streams" on the CPU: every OpenRAI node already runs on its own
+//   thread, so run_batch_async() simply executes the forward pass inline
+//   on the calling (node) thread.  Concurrency between nodes therefore
+//   still exists; only the device-side overlap is missing.  Cancellation
+//   is honoured between layers so kill() interrupts a running node.
 // -----------------------------------------------------------------------
 
 #ifndef OPENRAI_CUDA_ENABLED
@@ -11,39 +17,14 @@
 #include <openrai/log.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <random>
 #include <sstream>
+#include <stdexcept>
 
 namespace openrai {
-
-// 12-layer architecture for ~4B parameters
-static constexpr int L0_IN  = 32,    L0_OUT = 16384;
-static constexpr int L1_IN  = 16384, L1_OUT = 24576;
-static constexpr int L2_IN  = 24576, L2_OUT = 24576;
-static constexpr int L3_IN  = 24576, L3_OUT = 24576;
-static constexpr int L4_IN  = 24576, L4_OUT = 24576;
-static constexpr int L5_IN  = 24576, L5_OUT = 16384;
-static constexpr int L6_IN  = 16384, L6_OUT = 16384;
-static constexpr int L7_IN  = 16384, L7_OUT = 8192;
-static constexpr int L8_IN  = 8192,  L8_OUT = 4096;
-static constexpr int L9_IN  = 4096,  L9_OUT = 2048;
-static constexpr int L10_IN = 2048,  L10_OUT = 1024;
-static constexpr int L11_IN = 1024,  L11_OUT = 4;
-
-static constexpr size_t TOTAL_PARAMS =
-    static_cast<size_t>(L0_IN)*L0_OUT + L0_OUT +
-    static_cast<size_t>(L1_IN)*L1_OUT + L1_OUT +
-    static_cast<size_t>(L2_IN)*L2_OUT + L2_OUT +
-    static_cast<size_t>(L3_IN)*L3_OUT + L3_OUT +
-    static_cast<size_t>(L4_IN)*L4_OUT + L4_OUT +
-    static_cast<size_t>(L5_IN)*L5_OUT + L5_OUT +
-    static_cast<size_t>(L6_IN)*L6_OUT + L6_OUT +
-    static_cast<size_t>(L7_IN)*L7_OUT + L7_OUT +
-    static_cast<size_t>(L8_IN)*L8_OUT + L8_OUT +
-    static_cast<size_t>(L9_IN)*L9_OUT + L9_OUT +
-    static_cast<size_t>(L10_IN)*L10_OUT + L10_OUT +
-    static_cast<size_t>(L11_IN)*L11_OUT + L11_OUT;
 
 // ---- Xavier init -------------------------------------------------------
 static void xavier_init(std::vector<float>& w,
@@ -56,15 +37,16 @@ static void xavier_init(std::vector<float>& w,
 }
 
 // ---- Layer forward -----------------------------------------------------
-static void layer_cpu(const float* in,  int in_dim,
+static void layer_cpu(const float* in,  size_t in_dim,
                       const float* W,   const float* b,
-                      float*       out, int out_dim,
+                      float*       out, size_t out_dim,
                       bool sigmoid_act)
 {
-    for (int o = 0; o < out_dim; ++o) {
+    for (size_t o = 0; o < out_dim; ++o) {
         float acc = b[o];
-        for (int i = 0; i < in_dim; ++i)
-            acc += W[o * in_dim + i] * in[i];
+        const float* w_row = W + o * in_dim;
+        for (size_t i = 0; i < in_dim; ++i)
+            acc += w_row[i] * in[i];
         if (sigmoid_act)
             out[o] = 1.f / (1.f + std::exp(-acc));
         else
@@ -73,60 +55,128 @@ static void layer_cpu(const float* in,  int in_dim,
 }
 
 // -----------------------------------------------------------------------
+// GPUStreamContext (CPU)
+// -----------------------------------------------------------------------
+struct GPUStreamContext::Impl {
+    std::string        owner;
+    int                priority  = 50;
+    size_t             max_batch = 1;
+    NetArch            arch;
+    std::vector<float> act_a;       // ping
+    std::vector<float> act_b;       // pong
+    std::vector<float> out;         // [max_batch x output_dim]
+    std::atomic<bool>  cancelled{false};
+    std::atomic<bool>  busy{false};
+    std::atomic<uint64_t> launches{0};
+};
+
+GPUStreamContext::GPUStreamContext(std::string owner, int priority,
+                                   size_t max_batch, const NetArch& arch)
+    : impl_(std::make_unique<Impl>())
+{
+    impl_->owner     = std::move(owner);
+    impl_->priority  = std::clamp(priority, 0, 100);
+    impl_->max_batch = std::max<size_t>(1, max_batch);
+    impl_->arch      = arch;
+    const size_t ws  = impl_->max_batch * std::max<size_t>(1, arch.max_dim());
+    impl_->act_a.assign(ws, 0.f);
+    impl_->act_b.assign(ws, 0.f);
+    impl_->out.assign(impl_->max_batch * std::max<size_t>(1, arch.output_dim()), 0.f);
+}
+
+GPUStreamContext::~GPUStreamContext() = default;
+
+bool   GPUStreamContext::is_cuda()       const { return false; }
+bool   GPUStreamContext::poll()          const { return !impl_->busy.load(); }
+void   GPUStreamContext::synchronize()         { /* inline execution - nothing pending */ }
+void   GPUStreamContext::cancel()              { impl_->cancelled = true; }
+bool   GPUStreamContext::cancelled()     const { return impl_->cancelled.load(); }
+void   GPUStreamContext::reset_cancel()        { impl_->cancelled = false; }
+int    GPUStreamContext::priority()      const { return impl_->priority; }
+int    GPUStreamContext::cuda_priority() const { return 0; }
+int    GPUStreamContext::device()        const { return -1; }
+size_t GPUStreamContext::max_batch()     const { return impl_->max_batch; }
+const std::string& GPUStreamContext::owner() const { return impl_->owner; }
+uint64_t GPUStreamContext::launches()    const { return impl_->launches.load(); }
+uintptr_t GPUStreamContext::native_handle() const { return 0; }
+
+// -----------------------------------------------------------------------
 // GPUNeuralNet  (CPU implementation)
 // -----------------------------------------------------------------------
-GPUNeuralNet::GPUNeuralNet() {
-    init_weights(42);
+GPUNeuralNet::GPUNeuralNet(NetArch arch, unsigned seed, bool trainable)
+    : arch_(std::move(arch)),
+      default_ctx_mutex_(std::make_unique<std::mutex>())
+{
+    if (!arch_.valid())
+        throw std::invalid_argument("GPUNeuralNet: invalid NetArch");
+    trainable_ = trainable;
+    init_weights(seed);
     cuda_active_ = false;
-    LOG("[GPUNeuralNet] CPU fallback  params=" << TOTAL_PARAMS
-        << "  (install CUDA Toolkit to enable GPU)");
+    LOG("[GPUNeuralNet] CPU fallback  arch=" << arch_.name << " " << arch_.describe()
+        << "  params=" << arch_.param_count()
+        << "  (install CUDA Toolkit to enable GPU streams)");
 }
 
 void GPUNeuralNet::init_weights(unsigned seed) {
     std::mt19937 rng(seed);
-
-    auto alloc = [&](std::vector<float>& w, std::vector<float>& b,
-                     size_t in, size_t out) {
-        w.resize(out * in);
-        b.resize(out, 0.f);
-        xavier_init(w, in, out, rng);
-    };
-
-    alloc(h_w0_, h_b0_, L0_IN,  L0_OUT);
-    alloc(h_w1_, h_b1_, L1_IN,  L1_OUT);
-    alloc(h_w2_, h_b2_, L2_IN,  L2_OUT);
-    alloc(h_w3_, h_b3_, L3_IN,  L3_OUT);
-    alloc(h_w4_, h_b4_, L4_IN,  L4_OUT);
-    alloc(h_w5_, h_b5_, L5_IN,  L5_OUT);
-    alloc(h_w6_, h_b6_, L6_IN,  L6_OUT);
-    alloc(h_w7_, h_b7_, L7_IN,  L7_OUT);
-    alloc(h_w8_, h_b8_, L8_IN,  L8_OUT);
-    alloc(h_w9_, h_b9_, L9_IN,  L9_OUT);
-    alloc(h_w10_, h_b10_, L10_IN, L10_OUT);
-    alloc(h_w11_, h_b11_, L11_IN, L11_OUT);
+    const size_t L = arch_.layer_count();
+    h_w_.resize(L);
+    h_b_.resize(L);
+    for (size_t l = 0; l < L; ++l) {
+        const size_t in  = arch_.dims[l];
+        const size_t out = arch_.dims[l + 1];
+        h_w_[l].resize(out * in);
+        h_b_[l].assign(out, 0.f);
+        xavier_init(h_w_[l], in, out, rng);
+    }
 }
 
 void GPUNeuralNet::upload_weights_to_device() {}   // no-op in CPU path
+void GPUNeuralNet::sync_weights_to_device() {}     // host weights are the weights
 
-GPUNeuralNet::~GPUNeuralNet() {}
+GPUNeuralNet::~GPUNeuralNet() = default;
 
-void GPUNeuralNet::cpu_forward(const float* input, float* output) const {
-    std::vector<float> a0(L0_OUT), a1(L1_OUT), a2(L2_OUT), a3(L3_OUT), 
-                       a4(L4_OUT), a5(L5_OUT), a6(L6_OUT), a7(L7_OUT),
-                       a8(L8_OUT), a9(L9_OUT), a10(L10_OUT);
+void GPUNeuralNet::cpu_forward_batch(const float* inputs, size_t N, float* outputs,
+                                     const GPUStreamContext* ctx) const
+{
+    const size_t L       = arch_.layer_count();
+    const size_t max_dim = arch_.max_dim();
+    const size_t in_dim  = arch_.input_dim();
+    const size_t out_dim = arch_.output_dim();
 
-    layer_cpu(input,     L0_IN,  h_w0_.data(),  h_b0_.data(),  a0.data(),  L0_OUT,  false);
-    layer_cpu(a0.data(), L1_IN,  h_w1_.data(),  h_b1_.data(),  a1.data(),  L1_OUT,  false);
-    layer_cpu(a1.data(), L2_IN,  h_w2_.data(),  h_b2_.data(),  a2.data(),  L2_OUT,  false);
-    layer_cpu(a2.data(), L3_IN,  h_w3_.data(),  h_b3_.data(),  a3.data(),  L3_OUT,  false);
-    layer_cpu(a3.data(), L4_IN,  h_w4_.data(),  h_b4_.data(),  a4.data(),  L4_OUT,  false);
-    layer_cpu(a4.data(), L5_IN,  h_w5_.data(),  h_b5_.data(),  a5.data(),  L5_OUT,  false);
-    layer_cpu(a5.data(), L6_IN,  h_w6_.data(),  h_b6_.data(),  a6.data(),  L6_OUT,  false);
-    layer_cpu(a6.data(), L7_IN,  h_w7_.data(),  h_b7_.data(),  a7.data(),  L7_OUT,  false);
-    layer_cpu(a7.data(), L8_IN,  h_w8_.data(),  h_b8_.data(),  a8.data(),  L8_OUT,  false);
-    layer_cpu(a8.data(), L9_IN,  h_w9_.data(),  h_b9_.data(),  a9.data(),  L9_OUT,  false);
-    layer_cpu(a9.data(), L10_IN, h_w10_.data(), h_b10_.data(), a10.data(), L10_OUT, false);
-    layer_cpu(a10.data(),L11_IN, h_w11_.data(), h_b11_.data(), output,     L11_OUT, true);
+    // Use the context workspace if available (avoids allocation per tick)
+    std::vector<float> local_a, local_b;
+    float* a = nullptr;
+    float* b = nullptr;
+    if (ctx && ctx->impl()->act_a.size() >= N * max_dim) {
+        a = ctx->impl()->act_a.data();
+        b = ctx->impl()->act_b.data();
+    } else {
+        local_a.assign(N * max_dim, 0.f);
+        local_b.assign(N * max_dim, 0.f);
+        a = local_a.data();
+        b = local_b.data();
+    }
+
+    for (size_t n = 0; n < N; ++n) {
+        const float* x   = inputs + n * in_dim;
+        float*       cur = a;
+        float*       nxt = b;
+        const float* src = x;
+        for (size_t l = 0; l < L; ++l) {
+            if (ctx && ctx->cancelled()) {
+                std::fill(outputs + n * out_dim, outputs + (n + 1) * out_dim, 0.f);
+                return;
+            }
+            const size_t li = arch_.dims[l];
+            const size_t lo = arch_.dims[l + 1];
+            const bool last = (l + 1 == L);
+            float* dst = last ? (outputs + n * out_dim) : nxt;
+            layer_cpu(src, li, h_w_[l].data(), h_b_[l].data(), dst, lo, last);
+            src = dst;
+            std::swap(cur, nxt);
+        }
+    }
 }
 
 void GPUNeuralNet::run_batch(const float*           inputs,
@@ -134,10 +184,13 @@ void GPUNeuralNet::run_batch(const float*           inputs,
                               std::vector<NNResult>& results) const
 {
     results.resize(N);
-    std::vector<float> out(L4_OUT);
+    if (N == 0) return;
+    const size_t out_dim = arch_.output_dim();
+    std::vector<float> out(N * out_dim);
+    cpu_forward_batch(inputs, N, out.data(), nullptr);
     for (size_t i = 0; i < N; ++i) {
-        cpu_forward(inputs + i * INPUT_DIM, out.data());
-        results[i] = { out[0], out[1], out[2] > 0.5f, out[3] };
+        const float* r = out.data() + i * out_dim;
+        results[i] = { r[0], r[1], r[2] > 0.5f, r[3] };
     }
 }
 
@@ -147,39 +200,152 @@ NNResult GPUNeuralNet::run_single(const float* input) const {
     return res[0];
 }
 
+bool GPUNeuralNet::run_batch_async(const float* inputs, size_t N, GPUStreamContext& ctx) const {
+    auto* im = ctx.impl();
+    if (N == 0 || N > im->max_batch || im->cancelled.load()) return false;
+    if (im->arch.max_dim() < arch_.max_dim() || im->arch.output_dim() != arch_.output_dim())
+        return false;   // context workspace was sized for a different net
+    im->busy = true;
+    ++im->launches;
+    cpu_forward_batch(inputs, N, im->out.data(), &ctx);
+    im->busy = false;
+    return true;
+}
+
+void GPUNeuralNet::fetch_results(const GPUStreamContext& ctx, size_t N,
+                                 std::vector<NNResult>& results) const
+{
+    const auto* im = ctx.impl();
+    const size_t out_dim = arch_.output_dim();
+    N = std::min(N, im->max_batch);
+    results.resize(N);
+    for (size_t i = 0; i < N; ++i) {
+        const float* r = im->out.data() + i * out_dim;
+        results[i] = { r[0], r[1], r[2] > 0.5f, r[3] };
+    }
+}
+
 void GPUNeuralNet::print_summary() const {
     LOG("[GPUNeuralNet] CPU fallback"
-        "  arch=32->16384->24576->24576->24576->24576->16384->16384->8192->4096->2048->1024->4"
-        "  params=" << TOTAL_PARAMS << " (~" << (TOTAL_PARAMS / 1000000000.0) << "B)");
+        "  arch=" << arch_.name << " " << arch_.describe()
+        << "  params=" << arch_.param_count()
+        << " (~" << (static_cast<double>(arch_.param_count()) / 1e9) << "B)"
+        << "  activations=LeakyReLU/Sigmoid");
 }
 
 // -----------------------------------------------------------------------
-// encode_input_v2
+// GPUVectorIndex (CPU)
 // -----------------------------------------------------------------------
-void encode_input_v2(const std::string& s, float* out, size_t dim) {
-    std::fill(out, out + dim, 0.f);
-    if (s.empty()) return;
-    const size_t n = s.size();
+struct GPUVectorIndex::Impl {
+    std::string        owner;
+    size_t             dim = 32;
+    std::vector<float> vecs;        // [n x dim], normalised
+    size_t             n = 0;
+    mutable std::mutex mutex;
+    mutable double     last_us = 0.0;
+    mutable uint64_t   searches = 0;
+};
 
-    for (size_t i = 0; i < n; ++i)
-        out[static_cast<unsigned char>(s[i]) % 8] += 1.f;
-
-    for (size_t i = 0; i < std::min(n, size_t(16)); ++i)
-        out[8 + i] = static_cast<float>(static_cast<unsigned char>(s[i])) / 255.f;
-
-    out[24] = std::min(1.f, static_cast<float>(n) / 128.f);
-
-    for (size_t i = 0; i + 1 < n && i < 14; i += 2) {
-        size_t slot = 25 + (i / 2) % 7;
-        out[slot] += static_cast<float>(
-            (static_cast<unsigned char>(s[i]) * 31u +
-             static_cast<unsigned char>(s[i+1])) & 0xFF) / 255.f;
+static void normalise_into(const float* src, size_t len, float* dst, size_t dim) {
+    double norm = 0.0;
+    for (size_t i = 0; i < dim; ++i) {
+        const float v = i < len ? src[i] : 0.f;
+        dst[i] = v;
+        norm += static_cast<double>(v) * v;
     }
+    if (norm > 0.0) {
+        const float inv = static_cast<float>(1.0 / std::sqrt(norm));
+        for (size_t i = 0; i < dim; ++i) dst[i] *= inv;
+    }
+}
 
-    float maxv = *std::max_element(out, out + 8);
-    if (maxv > 0.f)
-        for (size_t i = 0; i < 8; ++i)
-            out[i] = (out[i] / maxv) * 2.f - 1.f;
+static void topk_from_scores(const float* scores, size_t n, size_t k, std::vector<IndexHit>& out) {
+    out.clear();
+    k = std::min(k, n);
+    if (k == 0) return;
+    std::vector<uint32_t> idx(n);
+    for (size_t i = 0; i < n; ++i) idx[i] = static_cast<uint32_t>(i);
+    std::partial_sort(idx.begin(), idx.begin() + static_cast<std::ptrdiff_t>(k), idx.end(),
+                      [scores](uint32_t a, uint32_t b) { return scores[a] > scores[b]; });
+    out.reserve(k);
+    for (size_t i = 0; i < k; ++i) out.push_back(IndexHit{ idx[i], scores[idx[i]] });
+}
+
+GPUVectorIndex::GPUVectorIndex(size_t dim, size_t initial_capacity, int priority, std::string owner)
+    : impl_(std::make_unique<Impl>())
+{
+    (void)priority;
+    impl_->owner = std::move(owner);
+    impl_->dim   = std::max<size_t>(1, dim);
+    impl_->vecs.reserve(std::max<size_t>(1, initial_capacity) * impl_->dim);
+}
+
+GPUVectorIndex::~GPUVectorIndex() = default;
+
+bool   GPUVectorIndex::is_cuda()  const { return false; }
+size_t GPUVectorIndex::dim()      const { return impl_->dim; }
+size_t GPUVectorIndex::size()     const { std::lock_guard<std::mutex> lk(impl_->mutex); return impl_->n; }
+size_t GPUVectorIndex::capacity() const { std::lock_guard<std::mutex> lk(impl_->mutex); return impl_->vecs.capacity() / impl_->dim; }
+double GPUVectorIndex::last_search_us() const { std::lock_guard<std::mutex> lk(impl_->mutex); return impl_->last_us; }
+uint64_t GPUVectorIndex::searches() const { std::lock_guard<std::mutex> lk(impl_->mutex); return impl_->searches; }
+uintptr_t GPUVectorIndex::native_handle() const { return 0; }
+
+uint32_t GPUVectorIndex::add(const float* vec, size_t len) {
+    std::lock_guard<std::mutex> lk(impl_->mutex);
+    const size_t d = impl_->dim;
+    impl_->vecs.resize((impl_->n + 1) * d);
+    normalise_into(vec, len, impl_->vecs.data() + impl_->n * d, d);
+    return static_cast<uint32_t>(impl_->n++);
+}
+
+void GPUVectorIndex::rebuild(const std::vector<std::vector<float>>& vectors) {
+    std::lock_guard<std::mutex> lk(impl_->mutex);
+    const size_t d = impl_->dim;
+    impl_->vecs.assign(vectors.size() * d, 0.f);
+    for (size_t i = 0; i < vectors.size(); ++i)
+        normalise_into(vectors[i].data(), vectors[i].size(), impl_->vecs.data() + i * d, d);
+    impl_->n = vectors.size();
+}
+
+void GPUVectorIndex::clear() {
+    std::lock_guard<std::mutex> lk(impl_->mutex);
+    impl_->vecs.clear();
+    impl_->n = 0;
+}
+
+std::vector<std::vector<IndexHit>> GPUVectorIndex::search_batch(const float* queries, size_t B, size_t k) const {
+    std::lock_guard<std::mutex> lk(impl_->mutex);
+    const auto t0 = std::chrono::steady_clock::now();
+    const size_t d = impl_->dim, n = impl_->n;
+    std::vector<std::vector<IndexHit>> out(B);
+    std::vector<float> q(d), scores(n);
+    for (size_t b = 0; b < B; ++b) {
+        normalise_into(queries + b * d, d, q.data(), d);
+        for (size_t i = 0; i < n; ++i) {
+            const float* v = impl_->vecs.data() + i * d;
+            float acc = 0.f;
+            for (size_t j = 0; j < d; ++j) acc += v[j] * q[j];
+            scores[i] = acc;
+        }
+        topk_from_scores(scores.data(), n, k, out[b]);
+    }
+    impl_->last_us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
+    ++impl_->searches;
+    return out;
+}
+
+std::vector<IndexHit> GPUVectorIndex::search(const float* query, size_t len, size_t k) const {
+    std::vector<float> q(impl_->dim, 0.f);
+    for (size_t i = 0; i < impl_->dim && i < len; ++i) q[i] = query[i];
+    auto r = search_batch(q.data(), 1, k);
+    return r.empty() ? std::vector<IndexHit>{} : std::move(r.front());
+}
+
+const char* gpu_backend_name() { return "CPU"; }
+
+bool gpu_memory_info(size_t& free_bytes, size_t& total_bytes) {
+    free_bytes = total_bytes = 0;
+    return false;
 }
 
 } // namespace openrai

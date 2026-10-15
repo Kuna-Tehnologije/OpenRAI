@@ -12,7 +12,6 @@ GPUJobQueue::GPUJobQueue(size_t max_concurrent_jobs)
 void GPUJobQueue::enqueue_job(const GPUJob& job) {
     available_slots_.acquire();
     { std::lock_guard<std::mutex> lock(mutex_); queue_.push(job); }
-    LOG("[GPUQueue] Enqueued  type=" << job.type << "  node=" << job.input_data);
 }
 
 bool GPUJobQueue::try_dequeue_job(GPUJob& job) {

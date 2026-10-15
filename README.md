@@ -9,6 +9,7 @@ OpenRAI is a **3D AI Infrastructure** – standalone platform (not a chatbot) with
 
 ?? **Quick Reads:**
 - [60-Second Overview](QUICK_3D_OVERVIEW.md) – What is 3D AI?
+- [Node Scheduling: CUDA streams, expert nodes, 7.82 Hz loop](NODE_SCHEDULING.md) - primary node decides who fires, why, and whose outcome wins
 - [Full 3D Architecture](3D_AI_INFRASTRUCTURE.md) – Deep dive with examples
 
 ## ?? Status: Production-Ready (Phase 2+)
@@ -22,6 +23,13 @@ OpenRAI is a **3D AI Infrastructure** – standalone platform (not a chatbot) with
 - ? **Self-reflection loop** with confidence-based output
 - ? **Persistent storage** (vector_memory.db + 100k CSV input pool)
 - ? **50ms iteration loop** (20 iter/sec throughput)
+- ? **Primary node + expert nodes** - every expert is a specialist in its own field, on its own thread, with its own model and its own CUDA stream/context
+- ? **7.82 Hz fixed-rate loop** (127.877 ms/tick, drift-free) - the primary decides which experts fire and why, and whose outcome is the most important
+- ? **Behaviour-driven lifecycle** - start / stop / suspend / resume / kill / respawn / re-prioritise expert nodes from the primary's goals and the experts' track record
+- ? **Every expert has its own trained model** - a neural LM of its field + a backprop-trained scorer; the primary fires experts by *model competence*, tools (calculator, memory index, LM) are only used afterwards; `--train-demo` shows the learning
+- ? **GPU vector memory + memory expert** - cosine search on the device, recall of learned answers
+- ? **Learning from use** - SQLite store of question -> answer experiences with `/good` `/bad` feedback, node trust, goals and graph persisted across runs
+- ? **Language expert (stage 2)** - a local LLM (Jan / LM Studio / llama.cpp / Ollama) phrases the final answer from the expert findings without stalling the 7.82 Hz loop
 
 ---
 
@@ -96,6 +104,46 @@ OpenRAI uses **three orthogonal dimensions** for knowledge processing:
 
 ---
 
+## Primary / Expert Node Loop (7.82 Hz)
+
+Since the node-scheduling upgrade the engine runs as **one primary node and N
+expert nodes** (default 8). Every expert has its own thread, its own model
+and its own CUDA stream with a hardware priority; the primary has the
+top-priority stream. Each tick (127.877 ms):
+
+```
+PHASE 1  input       one input (external inject or the CSV pool)
+PHASE 2  judge       primary scores it on its own stream
+PHASE 3  plan        primary decides WHICH experts fire and WHY
+                     (goal focus, affinity to the expert's field, trust, starvation, budget)
+PHASE 4  dispatch    fire() -> expert threads / CUDA streams run concurrently
+PHASE 5  collect     wait until the compute deadline (80 % of the tick)
+PHASE 6  arbitrate   primary decides WHOSE outcome is the most important
+PHASE 7  memory      winner -> current / short-term / vector memory / graph / goals
+PHASE 8  reflect     reflection loop on the winner -> [FINAL OUTPUT]
+PHASE 9  behaviour   start / stop / suspend / resume / kill / respawn / promote / demote
+         sleep_until(next tick boundary)
+```
+
+Typical log lines:
+
+```
+[PRIMARY] tick=2 focus=stability(0.35) concurrency=3 fire=3/8
+   FIRE[E1:anomaly 0.66 <- focus-goal=stability affinity=0.86; E6:telemetry 0.85 <- ...]
+   HOLD[E7:language 0.28 <- budget: concurrency 3 reached; ...]
+[ARBITER] tick=2 WINNER=E6:telemetry utility=0.48 because: importance 0.50 x goal(stability)=0.35 affinity 0.99 ...
+[BEHAVIOUR] tick=8 KILL E0:stability because: runaway: 3 consecutive deadline misses, ema_latency=134.81ms
+[BEHAVIOUR] tick=10 RESPAWN E0:stability because: focus goal stability needs this expert
+[SUMMARY] tick=48 fired=3 on_time=3 late=0 winner=E2:memory hz_target=7.82 hz_measured=7.79 overruns=0 ...
+```
+
+See **[NODE_SCHEDULING.md](NODE_SCHEDULING.md)** for the scoring formulas,
+the node state machine, the CUDA stream/context design and all
+`OPENRAI_*` environment variables. The legacy 6-phase description below is
+kept for the memory/semantic part, which is unchanged.
+
+---
+
 ## Main Loop (3D Processing Model)
 
 ```
@@ -165,8 +213,8 @@ Loop Wait: 50ms ? REPEAT (20 iterations/sec)
 ### Compile
 
 ```bash
-# Linux/macOS
-chmod +x build.sh && ./build.sh
+# Linux/macOS  (CMake; CUDA auto-detected -> per-node streams, else CPU threads)
+chmod +x build.sh && ./build.sh            # ./build.sh --test runs the node scheduler tests
 
 # Windows
 cl.exe /std:c++17 /EHsc /I include src\*.cpp /Fe:openrai.exe
@@ -182,7 +230,29 @@ cmake --build . --config Release
 ### Run
 
 ```bash
-./openrai
+./build/openrai --console                        # type a question, get answer + inner thinking (/good /bad teach it)
+./build/openrai_chat                             # chat front-end from the language-model branch
+OPENRAI_LLM_URL=http://127.0.0.1:1337 ./build/openrai --console   # with a local LLM: phrased final answers
+./build/openrai --ask "what is 100*100 and add 3/4 or sum divided by 1.34%"
+./build/openrai --gpu-selftest                   # prove that per-node CUDA streams overlap
+./build/openrai --train-demo                     # 3 test experts, same 10k-word data, 200 iterations -> report
+./build/openrai                                  # 7.82 Hz, 9 experts, 20 minutes, log to openrai.log
+./build/openrai --seconds 30 --experts 12 --concurrent 6 --verbose
+OPENRAI_PROFILE=lite ./build/openrai --seconds 10 # small nets, runs on any CPU
+./build/openrai_tests                             # scheduler / node / primary / skill / ask tests
+cmake -DOPENRAI_IMGUI_DIR=/path/to/imgui ..       # optional Dear ImGui front-end (openrai_gui)
+```
+
+```
+> what is 100*100 and add 3/4 or sum divided by 1.34%
+[E8:math  SOLVED  confidence=0.95  utility=0.98  tick=1  17ms]
+746324.6269
+--- inner thinking ---
+[PRIMARY] tick=1 ... FIRE[E8:math 0.76 <- affinity=1.00 never-fired; ...]
+[ARBITER] tick=1 WINNER=E8:math utility=0.98 ... because: SOLVED by skill (confidence 0.95) ...
+clause 1: "what is 100*100" -> 100 * 100 = 10000
+clause 2: "add 3/4" -> # + 3 / 4   (# = 10000) = 10000.75
+clause 3: "sum divided by 1.34%" -> # / 1.34%   (# = 10000.75) = 746324.6269
 ```
 
 ---

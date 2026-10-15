@@ -1,12 +1,12 @@
 @echo off
 REM Build script za OpenRAI PoC
-REM Trebam cl.exe compiler (Visual Studio)
+REM Trebam cl.exe compiler (Visual Studio). CPU-only build; za CUDA streams koristi CMake.
 
 setlocal enabledelayedexpansion
 
-set SOURCES=src\main.cpp src\core.cpp src\thread_pool.cpp src\memory.cpp src\gpu_queue.cpp src\reasoning.cpp
+set SOURCES=src\*.cpp
 set INCLUDES=/I include
-set FLAGS=/std:c++17 /EHsc /W4 /O2
+set FLAGS=/std:c++20 /EHsc /W4 /O2
 set LINKS=
 
 echo Building OpenRAI PoC...

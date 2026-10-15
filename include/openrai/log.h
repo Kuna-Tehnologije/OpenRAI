@@ -43,10 +43,15 @@ public:
         const std::string line = "[" + ts.str() + "] " + msg;
 
         std::lock_guard<std::mutex> lk(mutex_);
-        std::cout << line << "\n";
+        if (console_) std::cout << line << "\n";
         if (file_.is_open())
             file_ << line << "\n" << std::flush;
     }
+
+    // Console echo on/off (the file log is always written).  Used by the
+    // interactive console / GUI so answers are not buried in engine logs.
+    void set_console(bool on) { std::lock_guard<std::mutex> lk(mutex_); console_ = on; }
+    bool console() const { return console_; }
 
 private:
     Logger() {
@@ -77,12 +82,13 @@ private:
 
     std::mutex    mutex_;
     std::ofstream file_;
+    bool          console_ = true;
 };
 
 } // namespace openrai
 
 // -----------------------------------------------------------------------
-// LOG macro — assembles the full message, then calls Logger::write once
+// LOG macro â€” assembles the full message, then calls Logger::write once
 // -----------------------------------------------------------------------
 #define LOG(msg) \
     do { \

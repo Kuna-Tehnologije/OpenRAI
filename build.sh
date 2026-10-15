@@ -1,5 +1,9 @@
 #!/bin/bash
-# Build script za OpenRAI PoC - Linux/macOS
+# Build script for OpenRAI - Linux/macOS
+#
+#   ./build.sh            CMake build (auto-detects CUDA -> streams/contexts)
+#   ./build.sh --direct   plain g++/clang++ CPU-only build without CMake
+#   ./build.sh --test     build and run the node scheduler tests
 
 set -e
 
@@ -7,44 +11,31 @@ echo "==================================="
 echo "  OpenRAI Build Script (Unix-like)"
 echo "==================================="
 
-# Detect compiler
-if command -v clang++ &> /dev/null; then
-    COMPILER="clang++"
-    echo "Detected: Clang++"
-elif command -v g++ &> /dev/null; then
-    COMPILER="g++"
-    echo "Detected: GCC"
-else
-    echo "Error: No C++ compiler found"
-    exit 1
+MODE="cmake"
+for a in "$@"; do
+    case "$a" in
+        --direct) MODE="direct" ;;
+        --test)   MODE="test" ;;
+    esac
+done
+
+if [ "$MODE" = "direct" ]; then
+    if command -v clang++ &> /dev/null; then COMPILER="clang++"; else COMPILER="g++"; fi
+    echo "Direct CPU-only build with $COMPILER"
+    $COMPILER -std=c++20 -Wall -Wextra -O2 -I./include $(ls src/*.cpp) -pthread -o openrai
+    echo "Build successful -> ./openrai"
+    exit 0
 fi
 
-# Compiler flags
-CXXFLAGS="-std=c++17 -Wall -Wextra -O2"
-INCLUDES="-I./include"
-LIBS="-pthread"
-OUTPUT="openrai"
+mkdir -p build
+cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release -DOPENRAI_BUILD_TESTS=ON
+cmake --build . --config Release -j
 
-# Source files
-SOURCES="src/main.cpp src/core.cpp src/thread_pool.cpp src/memory.cpp src/gpu_queue.cpp src/reasoning.cpp"
-
-# Build
 echo ""
-echo "Compiling with: $COMPILER"
-echo "Output: $OUTPUT"
-echo ""
+echo "Build successful -> build/openrai"
 
-$COMPILER $CXXFLAGS $INCLUDES $SOURCES $LIBS -o $OUTPUT
-
-if [ $? -eq 0 ]; then
-    echo ""
-    echo "? Build successful!"
-    echo ""
-    echo "Running OpenRAI..."
-    echo "=================================="
-    ./$OUTPUT
-else
-    echo ""
-    echo "? Build failed!"
-    exit 1
+if [ "$MODE" = "test" ]; then
+    echo "Running node scheduler tests..."
+    ./openrai_tests
 fi

@@ -10,6 +10,14 @@ OpenRAI consists of 5 core modules:
 4. **ReasoningModule** - Thought analysis and evaluation
 5. **OpenRAI (Core)** - Main engine and loop orchestration
 
+plus the node-scheduling modules (documented in [NODE_SCHEDULING.md](NODE_SCHEDULING.md)):
+
+6. **GPUStreamContext / GPUNeuralNet** (`gpu_runtime.h`) - per-node CUDA stream + priority + workspace, async inference, configurable `NetArch`
+7. **ExpertNode** (`expert_node.h`) - expert in its own field: own thread, own stream, own model, start/stop/suspend/resume/kill
+8. **PrimaryNode** (`primary_node.h`) - executive: judge, plan (who fires and why), arbitrate (whose outcome matters), review (behaviour policy)
+9. **TickScheduler** (`scheduler.h`) - drift-free 7.82 Hz heartbeat with compute deadline and overrun accounting
+10. **EngineConfig** (`config.h`) - all tunables, overridable through `OPENRAI_*` environment variables
+
 ---
 
 ## 1. ThreadPool Module

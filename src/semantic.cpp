@@ -1,4 +1,5 @@
 #include <openrai/semantic.h>
+#include <openrai/gpu_runtime.h>
 #include <openrai/log.h>
 
 #include <algorithm>
@@ -102,23 +103,49 @@ std::vector<float> EmbeddingLayer::embed(const std::vector<std::string>& tokens)
 }
 
 // 3) Vector memory -------------------------------------------------------
-VectorMemory::VectorMemory(size_t dim, size_t capacity)
+VectorMemory::VectorMemory(size_t dim, size_t capacity, bool use_gpu_index)
     : dim_(dim == 0 ? 32 : dim),
-      capacity_(capacity == 0 ? 5000 : capacity),
-      persistence_path_("data/vector_memory.db") {}
+      capacity_(capacity == 0 ? 100000 : capacity),
+      persistence_path_("data/vector_memory.db")
+{
+    if (use_gpu_index)
+        index_ = std::make_unique<GPUVectorIndex>(dim_, std::min<size_t>(capacity_, 16384), 60, "vector-memory");
+}
+
+VectorMemory::~VectorMemory() = default;
 
 void VectorMemory::store(const std::string& text,
                          const std::vector<float>& embedding,
                          const std::string& tag) {
+    std::unique_lock<std::shared_mutex> lk(mutex_);
+    // Exact duplicates of a recent item add nothing but noise to searches
+    {
+        const size_t look_back = std::min<size_t>(items_.size(), 64);
+        for (size_t i = items_.size() - look_back; i < items_.size(); ++i)
+            if (items_[i].text == text && items_[i].tag == tag) return;
+    }
     Item item{ text, tag, embedding, std::chrono::system_clock::now() };
     if (item.embedding.size() != dim_) {
         item.embedding.resize(dim_, 0.0f);
     }
 
-    if (items_.size() >= capacity_)
-        items_.erase(items_.begin());
+    if (items_.size() >= capacity_) {
+        // Batch FIFO eviction (10 %) so the index rebuild is amortised
+        const size_t drop = std::max<size_t>(1, capacity_ / 10);
+        items_.erase(items_.begin(), items_.begin() + static_cast<std::ptrdiff_t>(std::min(drop, items_.size())));
+        rebuild_index_unlocked();
+    }
 
+    if (index_) index_->add(item.embedding.data(), item.embedding.size());
     items_.push_back(std::move(item));
+}
+
+void VectorMemory::rebuild_index_unlocked() {
+    if (!index_) return;
+    std::vector<std::vector<float>> all;
+    all.reserve(items_.size());
+    for (const auto& it : items_) all.push_back(it.embedding);
+    index_->rebuild(all);
 }
 
 float VectorMemory::cosine_similarity(const std::vector<float>& a,
@@ -136,25 +163,49 @@ float VectorMemory::cosine_similarity(const std::vector<float>& a,
     return dot / (std::sqrt(na) * std::sqrt(nb));
 }
 
-std::vector<SemanticHit> VectorMemory::search(const std::vector<float>& query,
-                                              size_t top_k) const {
+std::vector<SemanticHit> VectorMemory::search_unlocked(const std::vector<float>& query, size_t top_k,
+                                                       const std::string* tag_prefix) const {
     std::vector<SemanticHit> hits;
-    hits.reserve(items_.size());
+    if (items_.empty() || top_k == 0) return hits;
 
+    if (index_ && index_->size() == items_.size()) {
+        // GPU (or CPU-index) path: scores for every item, top-k selected.
+        // With a tag filter we ask for more candidates and filter.
+        const size_t want = tag_prefix ? std::min(items_.size(), std::max<size_t>(top_k * 8, 64)) : top_k;
+        auto raw = index_->search(query.data(), query.size(), want);
+        hits.reserve(top_k);
+        for (const auto& h : raw) {
+            if (h.index >= items_.size()) continue;
+            const Item& it = items_[h.index];
+            if (tag_prefix && it.tag.compare(0, tag_prefix->size(), *tag_prefix) != 0) continue;
+            hits.push_back(SemanticHit{ it.text, it.tag, h.score, it.timestamp });
+            if (hits.size() >= top_k) break;
+        }
+        return hits;
+    }
+
+    // Plain host path
+    hits.reserve(items_.size());
     for (const auto& item : items_) {
+        if (tag_prefix && item.tag.compare(0, tag_prefix->size(), *tag_prefix) != 0) continue;
         float sim = cosine_similarity(query, item.embedding);
         hits.push_back(SemanticHit{ item.text, item.tag, sim, item.timestamp });
     }
-
     std::sort(hits.begin(), hits.end(),
-              [](const SemanticHit& a, const SemanticHit& b) {
-                  return a.similarity > b.similarity;
-              });
-
-    if (hits.size() > top_k)
-        hits.resize(top_k);
-
+              [](const SemanticHit& a, const SemanticHit& b) { return a.similarity > b.similarity; });
+    if (hits.size() > top_k) hits.resize(top_k);
     return hits;
+}
+
+std::vector<SemanticHit> VectorMemory::search(const std::vector<float>& query, size_t top_k) const {
+    std::shared_lock<std::shared_mutex> lk(mutex_);
+    return search_unlocked(query, top_k, nullptr);
+}
+
+std::vector<SemanticHit> VectorMemory::search_tagged(const std::vector<float>& query,
+                                                     const std::string& tag_prefix, size_t top_k) const {
+    std::shared_lock<std::shared_mutex> lk(mutex_);
+    return search_unlocked(query, top_k, &tag_prefix);
 }
 
 std::vector<SemanticHit> VectorMemory::retrieve_context(const std::string& text,
@@ -167,14 +218,20 @@ std::vector<SemanticHit> VectorMemory::retrieve_context(const std::string& text,
 }
 
 size_t VectorMemory::size() const {
+    std::shared_lock<std::shared_mutex> lk(mutex_);
     return items_.size();
 }
+
+bool VectorMemory::gpu_index_active() const { return index_ && index_->is_cuda(); }
+double VectorMemory::last_search_us() const { return index_ ? index_->last_search_us() : 0.0; }
+uint64_t VectorMemory::searches() const { return index_ ? index_->searches() : 0; }
 
 void VectorMemory::set_persistence_path(const std::string& path) {
     persistence_path_ = path;
 }
 
 bool VectorMemory::save_to_disk(const std::string& path) const {
+    std::shared_lock<std::shared_mutex> lk(mutex_);
     try {
         std::filesystem::path p(path);
         if (p.has_parent_path()) {
@@ -207,6 +264,7 @@ bool VectorMemory::save_to_disk(const std::string& path) const {
 }
 
 bool VectorMemory::load_from_disk(const std::string& path) {
+    std::unique_lock<std::shared_mutex> lk(mutex_);
     try {
         std::ifstream file(path);
         if (!file.is_open()) return false;
@@ -217,12 +275,11 @@ bool VectorMemory::load_from_disk(const std::string& path) {
         file >> file_dim >> file_capacity >> count;
         file.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
 
-        if (file_dim != dim_) {
+        if (file_dim != dim_ && file_dim != 0) {
             dim_ = file_dim;
+            if (index_) index_ = std::make_unique<GPUVectorIndex>(dim_, std::min<size_t>(capacity_, 16384), 60, "vector-memory");
         }
-        if (file_capacity != 0) {
-            capacity_ = file_capacity;
-        }
+        // capacity is a runtime setting now; the file value is informational
 
         items_.clear();
         items_.reserve(std::min(count, capacity_));
@@ -249,9 +306,13 @@ bool VectorMemory::load_from_disk(const std::string& path) {
             item.timestamp = std::chrono::system_clock::time_point(std::chrono::seconds(ts));
             items_.push_back(std::move(item));
         }
+        if (items_.size() > capacity_)
+            items_.erase(items_.begin(), items_.begin() + static_cast<std::ptrdiff_t>(items_.size() - capacity_));
 
+        rebuild_index_unlocked();
         return true;
     } catch (...) {
+        rebuild_index_unlocked();
         return false;
     }
 }
@@ -305,6 +366,19 @@ float KnowledgeGraph::support_score(const std::string& text, const Tokenizer& to
     return std::min(1.0f, support / static_cast<float>(pairs));
 }
 
+std::vector<std::tuple<std::string, std::string, int>> KnowledgeGraph::export_edges() const {
+    std::vector<std::tuple<std::string, std::string, int>> out;
+    for (const auto& node : edges_)
+        for (const auto& edge : node.second)
+            out.emplace_back(node.first, edge.first, edge.second);
+    return out;
+}
+
+void KnowledgeGraph::import_edges(const std::vector<std::tuple<std::string, std::string, int>>& edges) {
+    for (const auto& e : edges)
+        edges_[std::get<0>(e)][std::get<1>(e)] += std::get<2>(e);
+}
+
 size_t KnowledgeGraph::edge_count() const {
     size_t total = 0;
     for (const auto& node : edges_)
@@ -319,7 +393,25 @@ GoalSystem::GoalSystem()
         {"stability", 0.35f},
         {"relevance", 0.35f},
         {"memory",    0.30f}
-      } {}
+      },
+      baselines_{0.35f, 0.35f, 0.30f} {}
+
+void GoalSystem::decay(float rate) {
+    rate = std::clamp(rate, 0.0f, 1.0f);
+    for (size_t i = 0; i < goals_.size() && i < baselines_.size(); ++i)
+        goals_[i].score += (baselines_[i] - goals_[i].score) * rate;
+}
+
+void GoalSystem::set_score(const std::string& name, float score) {
+    for (auto& g : goals_)
+        if (g.name == name) { g.score = std::clamp(score, 0.0f, 1.0f); return; }
+}
+
+float GoalSystem::score_of(const std::string& name) const {
+    for (const auto& g : goals_)
+        if (g.name == name) return g.score;
+    return 0.0f;
+}
 
 bool GoalSystem::contains_any(const std::string& text, const std::vector<std::string>& words) {
     for (const auto& w : words)
