@@ -1,0 +1,30 @@
+0.75	retrieve the previous incident notes for node 7 before proposing another restart
+0.70	remember that cluster B was restored from a verified backup last Tuesday
+0.60	similar context was found in memory with a cosine similarity of 0.88
+0.65	search the history for earlier latency reports about the payment service
+0.30	store the resolved incident summary with its timestamp and affected service
+0.80	the previous deployment caused the same timeout pattern; check the rollback notes
+0.70	recall the last approved recovery plan for the database replica
+0.45	save the operator's correction so later responses use the verified node name
+0.75	retrieve recent changes associated with the alert before selecting a remediation
+0.60	no relevant earlier answer was found; request more information instead of guessing
+0.55	consolidate duplicate incident records while retaining their original timestamps
+0.70	the last maintenance window recorded a similar sensor spike on node 10
+0.40	expire cached status entries that are older than the configured retention period
+0.65	use the most recent verified record when stored summaries conflict
+0.75	look up whether this cluster has experienced failover during the current week
+0.80	previously, reducing batch size resolved the queue buildup without a restart
+0.55	store the final resolution together with the evidence that confirmed it
+0.70	search long-term memory for a known issue involving the current software version
+0.60	the matching memory entry is old; verify that its configuration still applies
+0.75	recall that node 2 was removed from rotation after its health checks failed
+0.35	no matching history exists for this request in the available memory
+0.65	link the new incident to the earlier outage affecting the same dependency
+0.80	retrieve the operator-approved threshold rather than inferring it from old alerts
+0.45	record that the proposed change was not applied because approval was missing
+0.70	the incident was closed only after error rates returned to the normal range
+0.60	find earlier reports with the same error code and service name
+0.75	use historical recovery time to estimate how long the current failover may take
+0.30	remove duplicate embeddings but preserve unique facts and source references
+0.65	the stored answer was corrected; prefer the newer verified version
+0.55	keep the original event details when summarizing the incident for later retrieval

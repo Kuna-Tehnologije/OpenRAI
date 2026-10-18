@@ -1,0 +1,30 @@
+0.80	GPU queue latency reached 650 ms with a batch size of 1024; inspect queue depth
+0.35	cluster A processed 42000 requests per second during the measurement window
+0.75	queue depth is rising while worker utilization remains below 50 percent
+0.65	batch inference took 180 ms for 256 samples on the current device
+0.90	bandwidth is saturated on node 8; reduce transfer overhead before adding workers
+0.70	the thread pool is the bottleneck because runnable tasks exceed available threads
+0.80	pipeline stage 4 takes twice as long as the other stages
+0.25	throughput remained stable after the cache warmed up
+0.75	increase batch size gradually and measure both throughput and tail latency
+0.85	GPU utilization is low while the input queue is empty; investigate upstream data delivery
+0.70	p99 latency increased after concurrency was raised from four to eight workers
+0.80	reduce batch size when queueing delay violates the interactive response target
+0.60	stream 3 is waiting on disk reads rather than GPU computation
+0.90	memory transfers dominate runtime; keep intermediate tensors on the device
+0.35	the service sustained its expected request rate without elevated latency
+0.75	workers are idle because the producer cannot supply items quickly enough
+0.80	measure cold-start and warmed-up performance separately
+0.70	connection saturation on port 9100 is limiting the request rate
+0.85	a larger batch improved throughput but pushed p95 latency above its service objective
+0.60	compare CPU time, GPU time, and queue wait before optimizing the kernel
+0.75	the task queue grows continuously, indicating that incoming work exceeds service capacity
+0.45	add workers only if resource utilization shows that parallel capacity is available
+0.80	cap concurrent inference jobs to avoid memory pressure on the GPU
+0.65	data preprocessing takes longer than model execution for this workload
+0.30	the system completed the benchmark with no dropped requests
+0.85	a slow storage volume is delaying checkpoints and blocking the training pipeline
+0.70	reuse the established thread pool instead of creating threads for each request
+0.75	record throughput and p99 latency together so the tradeoff is visible
+0.80	the GPU queue is blocked by one oversized batch; split it into bounded chunks
+0.55	confirm that the benchmark uses the same input size and concurrency as production

@@ -1,0 +1,30 @@
+0.75	the conclusion is supported by two independent health checks and the service logs
+0.70	compare the current output with the earlier incident record before responding
+0.80	the evidence for a node failure is weak because neighboring probes are healthy
+0.75	the reasoning chain has three steps and no observed contradiction
+0.70	check whether the proposed conclusion follows from the measured values
+0.85	the previous answer was uncertain; gather current metrics before making a claim
+0.75	verify the assumption that cluster C is healthy before recommending a rollout
+0.60	confidence should decrease because the only supporting measurement is stale
+0.80	the alert and the deployment timestamp agree, but causation is not yet confirmed
+0.70	separate observed facts from hypotheses in the incident summary
+0.65	a second data source is needed to distinguish a sensor fault from a real spike
+0.75	the suggested restart conflicts with the record showing that the node is already offline
+0.80	the recovery succeeded, but verify error rates before calling the incident resolved
+0.55	no contradiction was found, though the available evidence covers only one region
+0.70	reconsider the plan because it assumes that the replica is synchronized
+0.85	the evidence supports reducing batch size; it does not support restarting the service
+0.65	state what remains unknown instead of filling gaps with an assumption
+0.75	check whether the timestamps refer to the same measurement window
+0.80	the recommendation is reversible and consistent with the verified recovery procedure
+0.60	one successful health probe is not enough to establish sustained recovery
+0.75	compare the proposed action with the user's stated goal before choosing an answer
+0.70	the result may be misleading because the benchmark used a smaller workload
+0.85	the logs confirm a timeout, while the root cause remains unverified
+0.65	review the conclusion for conflicts with the latest operator update
+0.75	report the confidence level and the evidence that would change the assessment
+0.70	the earlier answer used a deprecated threshold; update it using the current policy
+0.80	the action should wait because its impact on active requests has not been checked
+0.55	the available evidence is consistent but too limited for a definitive diagnosis
+0.75	confirm the final response addresses the question and does not overstate certainty
+0.70	record the counterevidence so the next review does not repeat the same assumption

@@ -1,0 +1,30 @@
+0.80	goal: restore service stability before increasing throughput on cluster A
+0.70	plan step 1: confirm the alert, then identify the affected node
+0.75	drain node 5, verify its replica, and only then begin maintenance
+0.65	schedule the change during a low-traffic window and notify the on-call operator
+0.85	rollback the release if error rates remain above the agreed threshold
+0.75	first profile the slow stage, then optimize it, and finally rerun the benchmark
+0.80	prioritize actions that reduce user impact and can be safely reversed
+0.60	compare the proposed fix with the last known-good configuration
+0.75	rebalance traffic only after checking the capacity of the destination cluster
+0.55	next action: collect logs and metrics before restarting the worker
+0.80	do not promote a replica until its data is synchronized and integrity checks pass
+0.65	limit the first rollout to one canary node and observe its health
+0.75	keep a rollback path available throughout the configuration change
+0.60	define a success metric before changing the alert threshold
+0.80	if queue depth keeps rising, reduce optional work before adding unverified capacity
+0.70	order the response: contain the issue, preserve evidence, then recover service
+0.65	assign an owner and a deadline to each step in the recovery plan
+0.85	stop the rollout when the canary shows a meaningful regression
+0.50	plan a controlled restart after active connections have drained
+0.70	verify the fix on one node before applying it to the full cluster
+0.75	maintain enough spare capacity to handle the expected failover load
+0.60	review dependencies before scheduling the database maintenance
+0.80	use the smallest safe change that addresses the confirmed cause
+0.65	set a time limit for investigation, then escalate with the collected evidence
+0.70	choose correctness and data safety over a faster but unverified recovery
+0.55	prepare a backout procedure before changing the production configuration
+0.80	reassess priorities if the incident affects additional regions
+0.60	confirm monitoring coverage before declaring the rollout complete
+0.75	coordinate the change with the owner of the downstream service
+0.70	close the plan only after the recovery checks and follow-up actions are recorded

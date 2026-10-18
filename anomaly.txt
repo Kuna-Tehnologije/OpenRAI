@@ -1,0 +1,30 @@
+0.90	anomaly score 0.94 is above the alert threshold on node 6
+0.80	request rate on node 12 is eight times its hourly baseline
+0.85	latency sample reached 720 ms, more than five standard deviations above normal
+0.70	unusual login attempts appeared from a new location within one minute
+0.25	no anomalies were detected on node 3 during the last six hours
+0.85	error volume spiked to 900 events in ten seconds; compare with the deployment timeline
+0.75	feature distribution shifted after the latest model update; investigate data drift
+0.40	raise the alert threshold only after confirming that the increase is harmless
+0.80	outlier readings affect one sensor while neighboring sensors remain stable
+0.90	a sudden drop in successful requests differs from the normal weekday pattern
+0.70	repeated requests from one client exceed its established traffic profile
+0.55	compare the current measurement window with a matching historical baseline
+0.95	critical anomaly: authentication failures increased across several unrelated accounts
+0.30	the detector observed ordinary seasonal variation and did not raise an alert
+0.80	database writes doubled unexpectedly while incoming request volume stayed constant
+0.75	CPU usage deviated sharply from the same node's normal workload
+0.85	traffic shifted to an unfamiliar region without a matching release or traffic event
+0.20	the observed values remain inside the expected distribution for this service
+0.90	a burst of timeout errors began immediately after the dependency update
+0.70	detect whether the elevated latency is isolated to one endpoint or affects all routes
+0.80	the current baseline may be stale because the service workload changed last week
+0.60	check for duplicate events before interpreting the apparent increase as a real spike
+0.90	abnormal outbound traffic continued after the scheduled batch job completed
+0.35	alert frequency fell after calibration; verify that sensitivity was not reduced too far
+0.85	model confidence dropped as the input pattern moved away from its training distribution
+0.75	several low-volume anomalies share the same source and time interval
+0.20	measurements match the expected profile for the morning maintenance window
+0.90	a sudden temperature rise occurred without a corresponding change in CPU load
+0.65	compare neighboring nodes to determine whether this is a local or cluster-wide event
+0.80	the detector flagged a new request pattern that is absent from recent history

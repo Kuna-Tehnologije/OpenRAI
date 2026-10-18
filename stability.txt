@@ -1,0 +1,30 @@
+0.95	error: service crashed on node 4; restart the worker and verify recovery
+0.90	watchdog reports node 7 unresponsive for 30 seconds; check health before restarting
+0.20	stability check passed for cluster A; all workers are healthy
+0.85	failover completed on node 2; replica is serving requests
+0.95	critical disk failure on node 9; isolate the host and fail over to its replica
+0.75	overload protection engaged on cluster B; shed optional traffic to protect core requests
+0.80	repeated process exits indicate a crash loop; inspect the latest deployment and logs
+0.65	restart node 5 after confirming that its state is safely replicated
+0.15	cluster C has reported no failed health checks during this window
+0.90	service availability fell below the recovery threshold after two workers stopped
+0.70	enable safe mode on cluster D while the damaged node is investigated
+0.85	node 11 missed three heartbeats; remove it from rotation and page the on-call operator
+0.75	recovery plan: isolate node 3, restore its replica, then rebalance traffic
+0.20	all replicas are synchronized and the service is operating normally
+0.80	a memory leak caused repeated restarts; capture diagnostics before recycling the process
+0.90	primary worker is unhealthy; promote the verified standby and monitor requests
+0.70	reduce nonessential jobs until cluster E returns to normal capacity
+0.95	database replica failed its integrity check; stop promotion and restore from a verified backup
+0.60	schedule a controlled restart after draining active connections
+0.25	uptime reached 120 days with no service interruptions
+0.85	node 8 recovered after failover; keep it out of rotation until checks pass
+0.75	circuit breaker opened because dependency failures exceeded the configured limit
+0.90	two availability zones are unreachable; switch traffic to the healthy region
+0.35	health probes are passing, but continue monitoring after the recent deployment
+0.80	stop retrying the failing worker when retries increase load on healthy replicas
+0.95	critical: quorum is lost; do not accept writes until a safe quorum is restored
+0.65	roll back the release if the crash rate remains above the baseline
+0.75	worker pool returned to normal after the overloaded node was drained
+0.90	confirm the backup is current before replacing the failed storage device
+0.20	service latency and error rates are within their normal operating ranges
